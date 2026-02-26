@@ -474,7 +474,7 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
 
 
 def compute_window_mesh2_spectrum_fm(
-    *get_data_randoms,
+    *get_data_randoms: Callable,
     spectrum: types.Mesh2SpectrumPoles,
     data_to_randoms_ratio: float,
     catalog_split_seed: int,
@@ -495,16 +495,41 @@ def compute_window_mesh2_spectrum_fm(
 
     Parameters
     ----------
-    get_data_randoms : callables
+    *get_data_randoms : Callable
         Functions that return tuples of (data, randoms) catalogs.
-        See :func:`prepare_jaxpower_particles` for details.
-    spectrum : Mesh2SpectrumPoles
+    spectrum : types.Mesh2SpectrumPoles
         Measured 2-point spectrum multipoles.
+    data_to_randoms_ratio : float
+        Population ratio between "data" and "randoms" to pick in the input randoms catalogs. Must be between 0 and 1.
+    catalog_split_seed : int
+        Random seed to use for the random split between "data" and "randoms" in the input randoms catalogs.
+    ric_nbins : int
+        Number of radial bins to use for the RIC.
+    ric_regions : list[str]
+        Regions to use for the RIC, e.g. ``["N", "S"]`` or ``["N", "SnoDES", "DES]``.
+    amr : bool
+        Whether to apply the angular mode removal (AMR), i.e. to forward model the power loss due to linear angular systematics weights.
+    regression_maps : list[str] | None
+        Names of the systematics templates to use for the AMR. Can be set to ``None`` if ``amr=False``.
+    amr_regions_zranges : list[tuple[str, tuple[float, float]]] | None
+        Regions where to apply the regressions for the AMR, and corresponding redshift ranges. Can be set to ``None`` if ``amr=False``.
+    pk_regions : list[str] | None
+        Regions for which to compute the window and power spectrum. If ``None``, the whole catalog is used as one region. Typically ``["NGC", "SGC"]``.
+    estimator_weights : str | None
+        Weights to apply right before the power spectrum estimation, e.g. ``"weight_FKP"``, ``weight_OQE``.
+    n_realizations : int
+        Number of realizations to compute.
+    seeds : list[int] | None
+        Seeds to use for each realization. If ``None``, defaults to ``2 * i_realization + 3``.
+    unitary_amplitude : bool, optional
+        Whether to use unitary amplitude for the mock survey mesh generation, by default True.
+    batch_size : int, optional
+        Number of window computations to run in parallel, by default 4. Depends on the available memory, number of randoms catalogs, size of the mesh... Lower if needed.
 
     Returns
     -------
-    WindowMatrix or dict of WindowMatrix
-        The computed 2-point spectrum window. If `auw` is provided, returns a dict with keys 'raw' and 'auw'.
+    dict[str, types.WindowMatrix] | dict[str, list[types.WindowMatrix]]
+        Average window matrices for each region, and the lists of window matrices for each realization.
     """
     # Notes to self:
     # * RIC not optional
@@ -518,6 +543,8 @@ def compute_window_mesh2_spectrum_fm(
     from .tools import select_region
 
     def _split_by_region(particles: ParticleField, pk_regions: list[str]) -> tuple[ParticleField, ...]:
+        if len(pk_regions) == 0:
+            return (particles,)
         distances = jnp.sqrt(jnp.power(particles.positions, 2).sum(axis=-1))
         ra = (jnp.arctan2(particles.positions[..., 1], particles.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
         dec = jnp.arcsin(particles.positions[..., 2] / distances) * 180 / jnp.pi
@@ -645,7 +672,6 @@ def compute_window_mesh2_spectrum_fm(
         for idx, pk_region in enumerate(pk_regions):
             windows_cv[pk_region] = [_cv(windows_fm[ireal][idx], windows_analytical[idx], windows_fm_geo[ireal][idx]) for ireal in range(n_realizations)]
 
-        # TODO: do the avg
         window_cv_avg = {}
         for pk_region in pk_regions:
             window_cv_avg[pk_region] = windows_cv[pk_region][0].clone(value=np.mean([window.value() for window in windows_cv[pk_region]], axis=0))
