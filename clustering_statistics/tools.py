@@ -1668,3 +1668,87 @@ def reshuffle_randoms(tracer, randoms, merged_data, data, seed):
     # for iregion, region in enumerate(cregions):
     #     randoms[select_region(randoms['RA'], randoms['DEC'], region=region)][output_columns].write(output_randoms_fn[iregion])
     return randoms
+
+def add_photometric_template_values(
+    catalog: Catalog,
+    template_names: list[str],
+    templates_path_N: str,
+    templates_path_S: str,
+    ebv_path: str | None = None,
+    nside: int = 256,
+    nest: bool = True,
+) -> Catalog:
+    """
+    Add photometric templates values to the input catalog and return a new catalog with the added columns.
+
+    Parameters
+    ----------
+    catalog : Catalog
+        Input catalog with RA and DEC columns.
+    template_names : list[str]
+        Names of the templates to add as columns in the catalog. Must be present in the templates files.
+    templates_path_N : str
+        Path to the Northern region templates file.
+    templates_path_S : str
+        Path to the Southern region templates file.
+    ebv_path : str | None, optional
+        Path to the EBV map file. If None, defaults to a predefined path.
+    nside : int, optional
+        Nside used by the healpix templates files, by default 256
+    nest : bool, optional
+        Whether the templates files used nested scheme, by default True.
+
+    Returns
+    -------
+    Catalog
+        A **new** catalog with the added template columns. The original catalog is not modified.
+
+    Notes
+    -----
+    The templates files are loaded using :fun:`astropy.table.Table.read`. Tested with FITS files.
+    """
+    import healpy as hp
+
+    ebv_path = ebv_path or "/global/cfs/cdirs/desicollab/users/rongpu/data/ebv/desi_stars_y3/v0.1/final_maps/lss/desi_ebv_lss_256.fits"
+
+    def load_templates(path, region):
+        import LSS.common_tools as common
+        from astropy.table import Table
+
+        need_maps = template_names or []
+        sysmaps = Table.read(path)
+
+        debv = common.get_debv(ebv_path)
+        cols = list(sysmaps.dtype.names)  # names of templates
+
+        for col in cols:
+            if "DEPTH" in col:
+                bnd = col.split("_")[-1]
+                sysmaps[col] *= 10 ** (-0.4 * common.ext_coeff[bnd] * sysmaps["EBV"])
+        for ec in ["GR", "RZ"]:
+            sysmaps["EBV_DIFF_" + ec] = debv["EBV_DIFF_" + ec]
+        if "EBV_DIFF_MPF" in need_maps:
+            sysmaps["EBV_DIFF_MPF"] = sysmaps["EBV"] - sysmaps["EBV_MPF_Mean_FW15"]
+
+        if ("SKY_RES_G" in need_maps) or ("SKY_RES_R" in need_maps) or ("SKY_RES_Z" in need_maps):
+            sky_g, sky_r, sky_z = common.get_skyres()
+            if "SKY_RES_G" in need_maps:
+                sysmaps["SKY_RES_G"] = sky_g[region]
+            if "SKY_RES_R" in need_maps:
+                sysmaps["SKY_RES_R"] = sky_r[region]
+            if "SKY_RES_Z" in need_maps:
+                sysmaps["SKY_RES_Z"] = sky_z[region]
+        # Drop unused, reorder, cast to float64 if needed and return as regular numpy array
+        return np.lib.recfunctions.structured_to_unstructured(sysmaps[need_maps].as_array()).astype(float)
+
+    templates_north = load_templates(templates_path_N, "N")
+    templates_south = load_templates(templates_path_S, "S")
+    ipix = hp.ang2pix(nside=nside, theta=catalog["RA"], phi=catalog["DEC"], nest=nest, lonlat=True)
+    region_north = select_region(ra=catalog["RA"], dec=catalog["DEC"], region="N")
+    region_south = select_region(ra=catalog["RA"], dec=catalog["DEC"], region="S")
+    assert (region_north | region_south).all(), "Some objects are neither in the North nor in the South region."
+    template_values = np.where(region_north, templates_north[ipix], templates_south[ipix])
+    catalog = catalog.deepcopy()
+    for i, name in enumerate(template_names):
+        catalog[name] = template_values[:, i]
+    return catalog

@@ -482,6 +482,7 @@ def compute_window_mesh2_spectrum_fm(
     ric_regions: list[str],
     amr: bool,  # is optional
     regression_maps: list[str] | None,
+    templates_paths_kwargs: dict | None,
     amr_regions_zranges: list[tuple[str, tuple[float, float]]] | None,
     pk_regions: list[str] | None,
     estimator_weights: str | None,
@@ -511,6 +512,8 @@ def compute_window_mesh2_spectrum_fm(
         Whether to apply the angular mode removal (AMR), i.e. to forward model the power loss due to linear angular systematics weights.
     regression_maps : list[str] | None
         Names of the systematics templates to use for the AMR. Can be set to ``None`` if ``amr=False``.
+    templates_paths_kwargs : dict
+        Keyword arguments to pass to the function loading the templates maps, e.g. paths to the templates files, EBV map, nside, etc. Not needed if ``amr=False``. Must at least contain the keys ``templates_path_N`` and ``templates_path_S`` with the paths to the templates files for the Northern and Southern regions, respectively.
     amr_regions_zranges : list[tuple[str, tuple[float, float]]] | None
         Regions where to apply the regressions for the AMR, and corresponding redshift ranges. Can be set to ``None`` if ``amr=False``.
     pk_regions : list[str] | None
@@ -540,7 +543,10 @@ def compute_window_mesh2_spectrum_fm(
     from desiwinds.window import get_window_geometry, get_window_spikes
     from jaxpower import BinMesh2SpectrumPoles, FKPField, ParticleField, compute_fkp2_normalization, create_sharding_mesh
 
-    from .tools import select_region
+    from .tools import add_photometric_template_values, select_region
+
+    def _add_photometric_template_values(catalogs: dict[str, mpy.Catalog]):
+        return {name: add_photometric_template_values(catalogs[name], regression_maps, **templates_paths_kwargs) for name in catalogs}
 
     def _split_by_region(particles: ParticleField, pk_regions: list[str]) -> tuple[ParticleField, ...]:
         if len(pk_regions) == 0:
@@ -559,7 +565,12 @@ def compute_window_mesh2_spectrum_fm(
     los = spectrum.attrs["los"]
 
     with create_sharding_mesh(meshsize=mattrs.get("meshsize", None)):
-        all_particles = prepare_jaxpower_particles(*get_data_randoms, mattrs=mattrs, add_randoms=["IDS"])
+        if amr:
+            all_particles = prepare_jaxpower_particles(
+                *(lambda: _add_photometric_template_values(get_data_randoms())), mattrs=mattrs, add_randoms=["IDS", *regression_maps]
+            )
+        else:
+            all_particles = prepare_jaxpower_particles(*get_data_randoms, mattrs=mattrs, add_randoms=["IDS"])
         all_randoms = [particles[1] for particles in all_particles]
         del all_particles
 
