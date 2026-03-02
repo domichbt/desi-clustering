@@ -53,8 +53,9 @@ def run_stats(tracer='LRG', version='abacus-2ndgen', imocks=[0], stats_dir=Path(
     get_box_stats_fn = functools.partial(box_tools.get_box_stats_fn, stats_dir=stats_dir)
     for imock in imocks:
         for zsnap in zsnaps:
-            for los in 'xyz':
+            for los in 'xyz'[-1:]:
                 options = dict(catalog=dict(version=version, tracer=tracer, zsnap=zsnap, los=los, imock=imock))
+                options['mesh3_spectrum'] = dict(basis='sugiyama', ells=[(0, 0, 0), (0, 2, 2), (1, 1, 0), (1, 1, 2), (2, 2, 0), (2, 2, 2)], mask_edges=['edge1[:, 1] <= nyq / 2.', 'edge2[:, 1] <= nyq / 2.'], buffer_size=31, mattrs={'meshsize': 400})
                 options = fill_box_fiducial_options(options)
                 compute_box_stats_from_options(stats, get_box_stats_fn=get_box_stats_fn, cache=cache, **options)
 
@@ -64,11 +65,12 @@ if __name__ == '__main__':
     mode = 'interactive'
     #mode = 'slurm'
     stats, postprocess = [], []
-    #stats = ['mesh2_spectrum'] # 'mesh3_spectrum']
-    stats = ['window_mesh2_spectrum']
+    #stats = ['mesh2_spectrum']
+    stats = ['mesh3_spectrum']
+    #stats = ['window_mesh2_spectrum']
     #stats = ['window_mesh3_spectrum']
     #postprocess = ['combine_regions']
-    imocks = np.arange(25)
+    imocks = np.arange(9)
 
     stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe/box/')
     version = 'abacus-2ndgen'

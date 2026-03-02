@@ -249,7 +249,7 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=Non
 
 def compute_box_mesh3_spectrum(*get_data, mattrs=None,
                                 basis='sugiyama-diagonal', ells=[(0, 0, 0), (2, 0, 2)], edges=None, los='z',
-                                buffer_size=0, cache=None):
+                                buffer_size=0, mask_edges=None, cache=None):
     r"""
     Compute the 3-point spectrum multipoles for a cubic box using :mod:`jaxpower`.
 
@@ -283,19 +283,17 @@ def compute_box_mesh3_spectrum(*get_data, mattrs=None,
     mattrs = mattrs or {}
     with create_sharding_mesh(meshsize=mattrs.get('meshsize', None)):
         all_particles = prepare_jaxpower_particles(*get_data, mattrs=mattrs)
-        if cache is None: cache = {}
-        if edges is None: edges = {'step': 0.001}
         attrs = _get_jaxpower_attrs(*all_particles)
         attrs.update(los=los)
         mattrs = all_particles[0]['data'].attrs
 
         # Define the binner
-        basis = 'sugiyama-diagonal' if all(isinstance(ell, tuple) for ell in ells) else 'scoccimarro'
         if cache is None: cache = {}
         bin = cache.get(f'bin_mesh3_spectrum_{basis}', None)
         if edges is None: edges = {'step': 0.02 if 'scoccimarro' in basis else 0.005}
+
         if bin is None or not np.all(bin.mattrs.meshsize == mattrs.meshsize) or not np.allclose(bin.mattrs.boxsize, mattrs.boxsize):
-            bin = BinMesh3SpectrumPoles(mattrs, edges=edges, basis=basis, ells=ells, buffer_size=buffer_size)
+            bin = BinMesh3SpectrumPoles(mattrs, edges=edges, basis=basis, ells=ells, buffer_size=buffer_size, mask_edges=mask_edges)
         cache.setdefault(f'bin_mesh3_spectrum_{basis}', bin)
 
         # Computing normalization
