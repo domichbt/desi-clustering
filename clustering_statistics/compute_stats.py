@@ -13,7 +13,14 @@ import lsstypes as types
 from . import tools
 from .tools import fill_fiducial_options, _merge_options, Catalog, setup_logging
 from .correlation2_tools import compute_angular_upweights, compute_particle2_correlation
-from .spectrum2_tools import compute_mesh2_spectrum, compute_window_mesh2_spectrum, compute_covariance_mesh2_spectrum, run_preliminary_fit_mesh2_spectrum, compute_rotation_mesh2_spectrum
+from .spectrum2_tools import (
+    compute_mesh2_spectrum,
+    compute_window_mesh2_spectrum,
+    compute_covariance_mesh2_spectrum,
+    run_preliminary_fit_mesh2_spectrum,
+    compute_rotation_mesh2_spectrum,
+    compute_window_mesh2_spectrum_fm,
+)
 from .spectrum3_tools import compute_mesh3_spectrum, compute_window_mesh3_spectrum
 from .recon_tools import compute_reconstruction
 
@@ -60,7 +67,7 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
     ----------
     stats : str or list of str
         Summary statistics to compute.
-        Choices: ['mesh2_spectrum', 'mesh3_spectrum', 'recon_mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
+        Choices: ['mesh2_spectrum', 'mesh3_spectrum', 'recon_mesh2_spectrum', 'window_mesh2_spectrum', 'window_mesh2_spectrum_fm', 'covariance_mesh2_spectrum']
     analysis : str, optional
         Type of analysis, 'full_shape' or 'png_local', to set fiducial options.
     cache : dict, optional
@@ -211,7 +218,11 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
         jax.experimental.multihost_utils.sync_global_devices('spectrum')  # such that spectrum ready for window
 
         # Window matrix
-        funcs = {'window_mesh2_spectrum': compute_window_mesh2_spectrum, 'window_mesh3_spectrum': compute_window_mesh3_spectrum}
+        funcs = {
+            "window_mesh2_spectrum": compute_window_mesh2_spectrum,
+            "window_mesh3_spectrum": compute_window_mesh3_spectrum,
+            "window_mesh2_spectrum_fm": compute_window_mesh2_spectrum_fm,
+        }
 
         for stat, func in funcs.items():
             if stat in stats:
@@ -228,7 +239,7 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                 spectrum_fn = window_options.pop('spectrum', None)
                 fn_window_options = window_options | dict(auw=False, cut=False)
                 if spectrum_fn is None:
-                    spectrum_stat = stat.replace('window_', '')
+                    spectrum_stat = stat.replace("window_", "").replace("_fm", "")
                     fn_window_options = options[spectrum_stat] | fn_window_options
                     spectrum_fn = get_stats_fn(kind=spectrum_stat, catalog=fn_catalog_options, **(options[spectrum_stat] | dict(auw=False, cut=False)))
                 spectrum = types.read(spectrum_fn)
