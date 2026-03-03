@@ -204,8 +204,8 @@ def select_region(ra, dec, region=None):
         return (~mask_ngc) & mask_s
     if region == 'NGCnoN':
         return mask_ngc & (~mask_n)
-    # if region == 'GCcomb_noNorth':
-    #     return ~mask_n
+    if region == 'noN':
+        return ~mask_n
 
     # DES footprint
     north, south, des = load_footprint().get_imaging_surveys()
@@ -218,8 +218,8 @@ def select_region(ra, dec, region=None):
         return (~mask_ngc) & mask_s & (~mask_des)
     if region == 'SGCnoDES':
         return (~mask_ngc) & (~mask_des)
-    # if region == 'GCcomb_noDES':
-    #     return ~mask_des
+    if region == 'noDES':
+        return ~mask_des
 
     # Other footprints
     if region == 'ACT_DR6':
@@ -450,6 +450,44 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     return propose_fiducial[kind]
 
 
+def check_if_stats_requires_blinding(analysis='full_shape', **catalog_options):
+    """Check if arguments passed as input to :func:`get_catalog_fn` require data vector blinding."""
+    version = catalog_options.get('version', '')
+    if 'protected' in analysis:
+        return False
+    if version is not None and version.startswith('data-dr2') and 'blinded' not in version:
+        return True
+    cat_dir = catalog_options.get('cat_dir', '')
+    if 'nonKP' in str(cat_dir):
+        return True
+    return False
+
+
+def apply_blinding(data, tracer, zrange):
+    """Apply data-vector-level blinding."""
+    labels = {('BGS', (0.1, 0.4)): 'BGS_z0',
+             ('LRG', (0.4, 0.6)): 'LRG_z0',
+             ('LRG', (0.6, 0.8)): 'LRG_z1',
+             ('LRG', (0.8, 1.1)): 'LRG_z2',
+             ('ELG', (0.8, 1.1)): 'ELG_z0',
+             ('ELG', (1.1, 1.6)): 'ELG_z1',
+             ('QSO', (0.8, 2.1)): 'QSO_z0'}
+    stracer = get_simple_tracer(tracer)
+    zmean = np.mean(zrange)
+    label = None
+    for (_tracer, _zrange), _label in labels.items():
+        if _tracer == stracer and _zrange[0] <= zmean <= _zrange[1]:
+            label = _label
+            break
+    if label is None:
+        raise ValueError(f'Could not find blinding for {tracer} in {zrange}. Please open a github issue.')
+    from desiblind import TracerPowerSpectrumMultipolesBlinder
+    if isinstance(data, types.Mesh2SpectrumPoles):
+        return TracerPowerSpectrumMultipolesBlinder.apply_blinding(name=label, data=data)
+    else:
+        raise NotImplementedError
+
+
 def _unzip_catalog_options(catalog):
     """From a catalog dictionary with nran, zrange, ..., tracer, return {tracer: {nran:..., zrange: ...}}"""
     if 'tracer' in catalog:
@@ -570,7 +608,7 @@ def _merge_options(options1, options2):
 
 
 def _find_extension(filename, ext):
-    """Try to guess file extension."""
+    """Try to guess file extension if ``ext`` is ``None``."""
     if ext is None:
         for ext in ['h5', 'fits']:
             fn = _find_extension(filename, ext)
@@ -605,6 +643,7 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
         Mock index (for mock catalogs). Default is 0.
     ext : str
         File extension. Default is 'h5'.
+        Pass ``None`` to try to guess it.
 
     Returns
     -------
@@ -613,9 +652,9 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
         Multiple file names are returned as a list when region is 'ALL' or when kind is 'randoms' or 'full_randoms', or imock is '*'.
     """
     # these are region splits that require loading NGC+SGC
-    special_regions = ['S', 'ALL', 'SnoDES', 'ACT_DR6', 'PLANCK_PR4'] + [f'GAL0{i}' for i in [20, 40, 60, 70, 80, 90, 97, 99]]
+    special_regions = ['S', 'ALL', 'noN', 'noDES', 'SnoDES', 'ACT_DR6', 'PLANCK_PR4'] + [f'GAL0{i}' for i in [20, 40, 60, 70, 80, 90, 97, 99]]
     if region in ['N', 'NGC', 'NGCnoN']: region = 'NGC'
-    elif region in ['SGC', 'SGCnoDES', 'DES']: region = 'SGC'
+    elif region in ['SGC', 'SGCnoDES', 'DES', 'SSGC']: region = 'SGC'
     elif 'full' not in kind:
         if region in special_regions: regions = ['NGC', 'SGC']
         else: raise NotImplementedError(f'{region} is unknown')
@@ -708,7 +747,10 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
                 return Path(cat_dir / f'Uchuu-SHAM_{get_simple_tracer(tracer)}_Y3-v2.0_0000_clustering.dat.{ext}')
             if kind == 'randoms':
                 return [cat_dir / f'Uchuu-SHAM_{get_simple_tracer(tracer)}_Y3-v2.0_0000_{iran}_clustering.ran.{ext}' for iran in range(nran)]
-    
+
+    if cat_dir is None:
+        raise ValueError('provide either cat_dir or version')
+
     cat_dir = Path(cat_dir)
     if kind == 'data':
         return _find_extension(cat_dir / f'{tracer}_{region}_clustering.dat', ext)
@@ -722,6 +764,19 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
         return _find_extension(cat_dir / f'{tracer}_{nran:d}_full_HPmapcut.ran', ext)
     if kind == 'single_randoms':
         return _find_extension(cat_dir / f'{tracer}_{region}_{nran:d}_clustering.ran', ext)
+
+
+def float2str(value, prec_min=1, prec_max=10):
+    """
+    Return the shortest fixed-point decimal representation of `value`
+    between prec_min and prec_max decimals that round-trips to the value.
+    """
+    value = float(value)
+    for p in range(prec_min, prec_max + 1):
+        s = f"{value:.{p}f}"
+        if np.isclose(float(s), value):
+            break
+    return s
 
 
 def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', kind='mesh2_spectrum', auw=None, cut=None, extra='', ext='h5', **kwargs):
@@ -792,7 +847,7 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', kin
     version = join_if_not_none(str, 'version')
     if version: stats_dir = stats_dir / version
     tracer = join_tracers(check_is_not_none('tracer'))
-    zrange = join_if_not_none(lambda zrange: f'z{zrange[0]:.1f}-{zrange[1]:.1f}', 'zrange')
+    zrange = join_if_not_none(lambda zrange: f'z{float2str(zrange[0], 1, 3)}-{float2str(zrange[1], 1, 3)}', 'zrange')
     zrange = f'_{zrange}' if zrange else ''
     region = join_tracers(check_is_not_none('region'))
     weight = join_tracers(check_is_not_none('weight'))
@@ -1089,7 +1144,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
     zrange, region, weight_type, imock, tracer = (kwargs.get(key) for key in ['zrange', 'region', 'weight', 'imock', 'tracer'])
     assert weight_type is not None, 'provide weight'
     # these are region splits that require loading NGC+SGC
-    special_regions = ['S', 'ALL', 'SnoDES', 'ACT_DR6', 'PLANCK_PR4'] + [f'GAL0{i}' for i in [20, 40, 60, 70, 80, 90, 97, 99]]
+    special_regions = ['S', 'ALL', 'SnoDES', 'noDES', 'ACT_DR6', 'PLANCK_PR4'] + [f'GAL0{i}' for i in [20, 40, 60, 70, 80, 90, 97, 99]]
     reshuffle_condition = kind == 'randoms' and (isinstance(reshuffle, dict) or (reshuffle is not None))
     if reshuffle_condition:
         # if randoms are going to be reshuffled, all regions are needed so we force it.
@@ -1221,7 +1276,6 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
     else:
         return rdzw
 
-
 @default_mpicomm
 def read_full_catalog(kind, wntile=None, concatenate=True,
                      get_catalog_fn=get_catalog_fn, mpicomm=None, attrs_only=False, **kwargs):
@@ -1349,7 +1403,6 @@ def possible_combine_regions(regions):
             combs[_region_comb] = _regions
     return combs
 
-
 def compute_fkp_effective_redshift(*fkps, cellsize=10., order=2, split=None, fields=None, func_of_z=lambda x: x,
                                    resampler='cic', return_fraction=False):
     """
@@ -1409,7 +1462,6 @@ def compute_fkp_effective_redshift(*fkps, cellsize=10., order=2, split=None, fie
         return reduce.sum(), rsum
 
     return compute_fkp_normalization_z(*randoms)
-
 
 def combine_stats(observables):
     """Combine input observables (e.g. NGC and SGC); of :mod:`lsstypes` type."""
