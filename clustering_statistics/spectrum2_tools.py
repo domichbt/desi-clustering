@@ -575,7 +575,7 @@ def compute_window_mesh2_spectrum_fm(
     pk_regions = pk_regions or []
     columns_optimal_weights = []
     if optimal_weights is not None:
-        columns_optimal_weights += getattr(optimal_weights, "columns", ["Z"])  # to compute optimal weights, e.g. for fnl
+        columns_optimal_weights += getattr(optimal_weights, "columns", [])  # to compute optimal weights, e.g. for fnl
 
     # Recover output and mesh information from the observable spectrum
     ellsout = spectrum.ells
@@ -591,7 +591,7 @@ def compute_window_mesh2_spectrum_fm(
             get_data_randoms = [wrap(_get_data_randoms) for _get_data_randoms in get_data_randoms]
 
         all_particles = prepare_jaxpower_particles(
-            *get_data_randoms, mattrs=mattrs, add_randoms=["IDS", "WEIGHT_FKP", *regression_maps, *columns_optimal_weights]
+            *get_data_randoms, mattrs=mattrs, add_randoms=["IDS", "WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights]
         )
         all_randoms = [particles["randoms"] for particles in all_particles]
         del all_particles
