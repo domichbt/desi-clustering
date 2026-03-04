@@ -571,7 +571,7 @@ def main(**kwargs):
                     _options_imock['catalog'][tracer] = _options_imock['catalog'][tracer] | dict(region=region, imock=imock)
                     if args.expand_randoms:
                         _options_imock['catalog'][tracer]['expand'] = {'parent_randoms_fn': get_catalog_fn(kind='parent_randoms', version=args.expand_randoms, tracer=tracer, region=region, nran=max(value['nran'] for value in _options_imock['recon'].values()))}
-                compute_stats_from_options(args.stats, get_catalog_fn=get_catalog_fn, get_stats_fn=get_stats_fn, cache=cache, **_options_imock)
+                compute_stats_from_options(args.stats, get_catalog_fn=get_catalog_fn, get_stats_fn=get_stats_fn, cache=cache, analysis=args.analysis, **_options_imock)
                 jax.experimental.multihost_utils.sync_global_devices(region)
 
     if args.combine is not None and jax.process_index() == 0:

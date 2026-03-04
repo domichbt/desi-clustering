@@ -413,7 +413,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     tracer = get_simple_tracer(tracer)
     propose_fiducial = base | propose_fiducial[tracer]
     if 'png' in analysis:
-        propose_weight = 'default-oqe' # use OQE weights by default
+        propose_weight = 'default-FKP-oqe' # use OQE weights by default
         propose_zranges = {'BGS': [(0.1, 0.4)], 'LRG': [(0.4, 1.1)], 'ELG': [(0.8, 1.6)], 'LRG+ELG': [(0.8, 1.1)], 'QSO': [(0.8, 3.5)]}
         propose_FKP_P0 = {'LRG': 5e4, 'ELG': 2e4, 'QSO': 3e4}
         propose_meshsizes = {'BGS': 700, 'LRG': 700, 'ELG': 700, 'LRG+ELG': 700, 'QSO': 700}
@@ -435,7 +435,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
         propose_fiducial['mesh2_spectrum'].update(ells=(0, 2, 4))
         propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal', selection_weights={tracer: functools.partial(compute_fiducial_selection_weights, tracer=tracer) for tracer in tracers})
     if 'protected' in analysis:
-        propose_fiducial['mesh2_spectrum'].update(ells=(0,))
+        propose_fiducial['mesh2_spectrum'].update(ells=(0,), edges={'min': 0.02, 'step': 0.001})
         propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0)])
     for stat in ['recon']:
         recon_cellsize = propose_fiducial[stat]['smoothing_radius'] / 3.
@@ -472,7 +472,7 @@ def apply_blinding(data, tracer, zrange):
              ('ELG', (0.8, 1.1)): 'ELG_z0',
              ('ELG', (1.1, 1.6)): 'ELG_z1',
              ('QSO', (0.8, 2.1)): 'QSO_z0'}
-    stracer = get_simple_tracer(tracer)
+    stracer = get_simple_tracer(join_tracers(tracer))
     zmean = np.mean(zrange)
     label = None
     for (_tracer, _zrange), _label in labels.items():
@@ -560,6 +560,7 @@ def fill_fiducial_options(kwargs, analysis='full_shape'):
     for tracer in tracers:
         fiducial_options = propose_fiducial('catalog', tracer=tracer, analysis=analysis)
         options['catalog'][tracer] = fiducial_options | options['catalog'][tracer]
+    weights = {tracer: options['catalog'][tracer].get('weight', None) for tracer in tracers}
     recon_options = options.pop('recon', {})
     # recon for each tracer
     options['recon'] = {}
@@ -576,6 +577,14 @@ def fill_fiducial_options(kwargs, analysis='full_shape'):
             options[stat] = fiducial_options | options.get(stat, {})
             if 'mesh' in stat:
                 if mattrs: options[stat]['mattrs'] = mattrs
+            if stat in ['mesh2_spectrum']:
+                for tracer in tracers:
+                    if weights[tracer] is not None:
+                        if 'OQE' in weights[tracer].upper():
+                            assert options[stat].get('optimal_weights', None) is not None, 'provide optimal_weights in mesh2_spectrum if you want to use OQE'
+                        else:
+                            options[stat].pop('optimal_weights', None)
+                            warnings.warn('Removing optimal_weights from mesh2_spectrum as OQE not in weights')
         for stat in ['window_mesh2_spectrum', 'window_mesh3_spectrum']:
             spectrum_options = options[stat.replace('window_', '')]
             spectrum_options = {key: value for key, value in spectrum_options.items() if key in ['selection_weights', 'optimal_weights', 'basis']}

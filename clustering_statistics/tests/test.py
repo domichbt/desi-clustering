@@ -127,11 +127,20 @@ def test_expand_randoms(stat='mesh2_spectrum'):
 def test_optimal_weights(stats=['mesh2_spectrum']):
     stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
     for tracer in ['LRG']:
-        zranges = tools.propose_fiducial('zranges', tracer)[:1]
-        for region in ['NGC', 'SGC']:
+        zranges = tools.propose_fiducial('zranges', tracer)[0]
+        for region in ['NGC', 'SGC'][:1]:
             #catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zranges, region=region, imock=451)
             catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default-FKP', nran=1)
-            compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), mesh2_spectrum={'auw': True, 'cut': True}, particle2_correlation={}, analysis='png_local')
+            compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), mesh2_spectrum={'auw': True, 'cut': True}, analysis='png_local')
+            catalog_options_oqe = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default-FKP-oqe', nran=1)
+            compute_stats_from_options(stats, catalog=catalog_options_oqe, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), mesh2_spectrum={'auw': True, 'cut': True}, analysis='png_local')
+            for stat in stats:
+                fn = tools.get_stats_fn(kind=stat, stats_dir=stats_dir, **catalog_options)
+                fn_oqe = tools.get_stats_fn(kind=stat, stats_dir=stats_dir, **catalog_options_oqe)
+                if jax.process_index() == 0:
+                    spectrum = types.read(fn)
+                    spectrum_oqe = types.read(fn_oqe)
+                    assert not np.allclose(spectrum_oqe.value(), spectrum.value())
 
 
 def test_cross(stats=['mesh2_spectrum']):
@@ -241,8 +250,7 @@ if __name__ == '__main__':
     jax.distributed.initialize()
     setup_logging()
 
-    test_blinding()
-
+    #test_blinding()
     #test_covariance()
     #test_rotation()
     #test_window3()
@@ -250,7 +258,7 @@ if __name__ == '__main__':
     #test_auw(stats=['mesh2_spectrum'])
     #test_bitwise(stats=['mesh2_spectrum'])
     #test_expand_randoms()
-    #test_optimal_weights()
+    test_optimal_weights()
     #test_cross()
     #test_window()
     #test_spectrum3()

@@ -91,7 +91,6 @@ def run_stats(cat_dir=None, stats_dir=None, tracer='LRG', zranges=[0.4, 1.1], we
             options = dict(catalog=dict(cat_dir=cat_dir, tracer=tracer, zrange=zranges, weight=weight, region=region, ext='fits'), 
                            mesh2_spectrum={'cut': False}, window_mesh2_spectrum={'cut': False})
             options = fill_fiducial_options(options, analysis='local_png')
-
             compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
 
 
