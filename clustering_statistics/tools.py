@@ -468,6 +468,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
             catalog_split_seed=975,
             ric_nbins=1000,
             ric_regions=propose_photoregions,
+            geo=True,
             amr=True,
             regression_maps=propose_templates,
             templates_paths_kwargs=None,  # FIXME add
