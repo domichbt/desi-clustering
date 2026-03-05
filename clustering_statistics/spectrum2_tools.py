@@ -742,9 +742,22 @@ def compute_window_mesh2_spectrum_fm(
                         ],
                     )
                 )
+                # These weights also contain real weights and FKP weights ; need to remove the real weights to isolate the "estimator weights" to apply at computation time in the FM
                 return fkp_field.clone(
-                    data=fkp_field.data.clone(extra=fkp_field.data.extra | {"weight_optimal_1": data_w1, "weight_optimal_2": data_w2}),
-                    randoms=fkp_field.randoms.clone(extra=fkp_field.randoms.extra | {"weight_optimal_1": randoms_w1, "weight_optimal_2": randoms_w2}),
+                    data=fkp_field.data.clone(
+                        extra=fkp_field.data.extra
+                        | {
+                            "weight_optimal_1": data_w1 / fkp_field.data.weights,
+                            "weight_optimal_2": data_w2 / fkp_field.data.weights,
+                        }
+                    ),
+                    randoms=fkp_field.randoms.clone(
+                        extra=fkp_field.randoms.extra
+                        | {
+                            "weight_optimal_1": randoms_w1 / fkp_field.randoms.weights,
+                            "weight_optimal_2": randoms_w2 / fkp_field.randoms.weights,
+                        }
+                    ),
                 )
 
             windows = {extra_effects: {}}
