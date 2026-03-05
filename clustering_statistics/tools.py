@@ -372,10 +372,13 @@ def compute_fiducial_png_weights(ell, catalog, tracer='LRG', p=1.):
     ps = _make_tuple(p, n=2)
 
     def _get_weights(catalogs, tracers, ps):
-        wtilde = bias(catalogs[0]['Z'], tracer=tracers[0]) - ps[0]
-        w0 = growth_factor(catalogs[1]['Z']) * (bias(catalogs[1]['Z'], tracer=tracers[1]) + growth_rate(catalogs[1]['Z']) / 3)
-        w2 = 2 / 3 * growth_factor(catalogs[1]['Z']) * growth_rate(catalogs[1]['Z'])
-        return catalogs[0]['INDWEIGHT'] * wtilde, catalogs[1]['INDWEIGHT'] * {0: w0, 2: w2}[ell]
+        if ell not in [0, 2]:
+            return catalogs[0]["INDWEIGHT"], catalogs[1]["INDWEIGHT"]
+        else:
+            wtilde = bias(catalogs[0]['Z'], tracer=tracers[0]) - ps[0]
+            w0 = growth_factor(catalogs[1]['Z']) * (bias(catalogs[1]['Z'], tracer=tracers[1]) + growth_rate(catalogs[1]['Z']) / 3)
+            w2 = 2 / 3 * growth_factor(catalogs[1]['Z']) * growth_rate(catalogs[1]['Z'])
+            return catalogs[0]['INDWEIGHT'] * wtilde, catalogs[1]['INDWEIGHT'] * {0: w0, 2: w2}[ell]
 
     yield _get_weights(catalogs, tracers, ps)
     if tracers[1] != tracers[0]:
