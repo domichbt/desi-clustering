@@ -48,11 +48,11 @@ def _make_list_zrange(zranges):
 
 
 def compute_stats_from_options(stats, analysis='full_shape', cache=None,
-                                get_stats_fn=tools.get_stats_fn,
-                                get_catalog_fn=None,
-                                read_clustering_catalog=tools.read_clustering_catalog,
-                                read_full_catalog=tools.read_full_catalog,
-                                **kwargs):
+                               get_stats_fn=tools.get_stats_fn,
+                               get_catalog_fn=None,
+                               read_clustering_catalog=tools.read_clustering_catalog,
+                               read_full_catalog=tools.read_full_catalog,
+                               **kwargs):
     """
     Compute summary statistics based on the provided options.
 

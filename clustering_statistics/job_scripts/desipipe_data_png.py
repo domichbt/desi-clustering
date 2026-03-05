@@ -78,31 +78,29 @@ def run_stats(cat_dir=None, stats_dir=None, tracer='LRG', zranges=[0.4, 1.1], we
     try: jax.distributed.initialize()
     except RuntimeError: print('Distributed environment already initialized')
     else: pass  # print('Initializing distributed environment')
-    from clustering_statistics import tools, setup_logging, compute_stats_from_options, fill_fiducial_options
-    from mpi4py import MPI
-    setup_logging(level=(logging.INFO if MPI.COMM_WORLD.rank == 0 else logging.ERROR))
+    from clustering_statistics import tools, setup_logging, compute_stats_from_options
 
-    #logger.info(f'COUCOU {stats} -- {kwargs}')
+    # May need to add this for the desipipe now interactive is fine...
+    #from mpi4py import MPI
+    #setup_logging(level=(logging.INFO if MPI.COMM_WORLD.rank == 0 else logging.ERROR))
 
     cache = {}
     get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
     for region in regions:
         for weight in weights:
+            # options will be filled by default options in compute_stats_from_options following analysis='local_png'
             options = dict(catalog=dict(cat_dir=cat_dir, tracer=tracer, zrange=zranges, weight=weight, region=region, ext='fits'), 
                            mesh2_spectrum={'cut': False}, window_mesh2_spectrum={'cut': False})
-            options = fill_fiducial_options(options, analysis='local_png')
-            compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
+            compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, analysis='local_png', **options)
 
 
-def postprocess_stats(cat_dir=None, stats_dir=None, tracer='LRG', zranges=[0.4, 1.1], weights=['default-fkp'], regions=['GCcomb'], stats=['mesh2_spectrum'], postprocess=['combine_regions'], **kwargs):
-    from clustering_statistics import postprocess_stats_from_options, fill_fiducial_options
-    for region in regions:
-        for weight in weights:
-            get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
-            options = dict(catalog=dict(cat_dir=cat_dir, tracer=tracer, zrange=zranges, weight=weight, region=region, ext='fits'), 
-                        combine_regions={'stats': stats}, mesh2_spectrum={'cut': False}, window_mesh2_spectrum={'cut': False})
-            options = fill_fiducial_options(options, analysis='local_png')
-            postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **options)
+def postprocess_stats(cat_dir=None, stats_dir=None, tracer='LRG', zranges=[0.4, 1.1], weights=['default-fkp'], stats=['mesh2_spectrum'], postprocess=['combine_regions'], **kwargs):
+    from clustering_statistics import postprocess_stats_from_options
+    for weight in weights:
+        get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
+        options = dict(catalog=dict(cat_dir=cat_dir, tracer=tracer, zrange=zranges, weight=weight, ext='fits'), 
+                       combine_regions={'stats': stats}, mesh2_spectrum={'cut': False}, window_mesh2_spectrum={'cut': False})
+        postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, analysis='local_png', **options)
 
 
 def collect_argparser():
@@ -120,6 +118,8 @@ if __name__ == '__main__':
     # To run interactively on NERSC, use the following commands:
 
     salloc -N 1 -C "gpu&hbm80g" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
+
+    salloc -N 1 -C "gpu" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
     
     # source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main  # don't forget this to load environment variables
     # module unload desi-clustering
@@ -128,7 +128,7 @@ if __name__ == '__main__':
     
     srun -n 4 python desipipe_data_png.py --interactive --blinded
     """
-    from desipipe import setup_logging
+    from clustering_statistics import setup_logging
     from mpi4py import MPI
     setup_logging(level=(logging.INFO if MPI.COMM_WORLD.rank == 0 else logging.ERROR))
 
@@ -141,7 +141,15 @@ if __name__ == '__main__':
         logger.info("Create queue with jobs inside using desipipe. Don\'t forget to run `desipipe spawn -q data_png --spawn` to launch the jobs!")
         tm, tm80 = setup_queue()
 
-    todo = ['mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum'][:1]
+    def get_run_stats():
+        if mode == 'interactive':
+            return run_stats
+        else: 
+            _tm = tm80
+            #if tracer in ['LRG']: _tm = tm
+            return _tm.python_app(run_stats)
+
+    todo = ['mesh2_spectrum'] #, 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
     postprocess = ['combine_regions']
     logger.info(f'Running stats {todo} and postprocess {postprocess}')
     
@@ -161,38 +169,33 @@ if __name__ == '__main__':
 
     regions = ['NGC', 'SGC', 'N', 'NGCnoN', 'SGCnoDES', 'DES'][:2]  # + ['ACT_DR6', 'PLANCK_PR4'] + [f'GAL0{i}' for i in [40, 60]]
     logger.info(f'Running on regions: {regions}')
-    postregions = ['GCcomb', 'NS', 'GCcomb_noN', 'GCcomb_noDES'][:1]
-    logger.info(f'Combining postregions: {postregions}') 
 
     # 'LRGxELG_LOP', 'LRGxQSO', 'ELG_LOPxQSO'
-    for tracer in ['LRG', 'LRG_zcmb', 'ELGnotqso', 'ELGnotqso_zcmb', 'QSO', 'QSO_zcmb'][:1]:
+    for tracer in ['LRG', 'LRG_zcmb', 'ELGnotqso', 'QSO', 'QSO_zcmb', ('LRG', 'QSO'), ('LRG', 'ELGnotqso'), ('ELGnotqso', 'QSO')][:1]:
         from clustering_statistics import tools
         logger.info(tracer)
         zranges = tools.propose_fiducial(kind='zranges', tracer=tracer, analysis='local_png')
-        zranges += tools.propose_fiducial(kind='zranges', tracer=tracer)
+        #zranges += tools.propose_fiducial(kind='zranges', tracer=tracer)
         logger.info(f'zranges: {zranges}')
 
-        # Choice of imaging systematics avaialble in the catalogs:
-        # https://desi.lbl.gov/trac/wiki/keyprojects/Y3-DR/LSScat/imaging_systematics
-        if 'LRG' in tracer:
-            weights = ['default-oqe', 'default-oqe-wsys_WEIGHT_IMLIN_FINEZBIN_ALLEBVCMB'] 
-            if 'zcmb' in tracer:
-                weights += ['default-oqe-wsys_WEIGHT_IMLIN_FINEZBIN_ALLEBV']
-        elif 'ELG' in tracer:
-            weights = ['default-fkp', 'default-oqe', 'default-oqe-wsys_WEIGHT_IMLIN_NODEBV', 'default-oqe-wsys_WEIGHT_IMLIN_FINEZBIN_NODEBV']
-        elif 'QSO' in tracer:
-            weights = ['default-oqe']
- 
-        def get_run_stats():
-            if mode == 'interactive':
-                return run_stats
-            else: 
-                _tm = tm80
-                if tracer in ['LRG']:
-                    _tm = tm
-                return _tm.python_app(run_stats)
-
+        weights = ['default-fkp-oqe', 'default-fkp']
         get_run_stats()(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=regions, stats=todo)
-    
+
+        # # Choice of imaging systematics avaialble in the catalogs:
+        # # https://desi.lbl.gov/trac/wiki/keyprojects/Y3-DR/LSScat/imaging_systematics
+        if tracer in ['LRG', 'LRG_zcmb']:
+            weights = ['default-fkp-oqe-wsys_WEIGHT_IMLIN_FINEZBIN_ALLEBVCMB']
+            if 'zcmb' in tracer:
+                weights += ['default-fkp-oqe-wsys_WEIGHT_IMLIN_FINEZBIN_ALLEBV']
+        elif tracer in ['ELGnotqso']:
+            weights = ['default-fkp-oqe-wsys_WEIGHT_IMLIN_FINEZBIN_NODEBV']
+        elif tracer == ('LRG', 'QSO'):
+            weights = [('default-fkp-oqe-wsys_WEIGHT_IMLIN_FINEZBIN_ALLEBVCMB', 'default-fkp-oqe')]
+        else:
+            weights = []
+ 
+        get_run_stats()(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=regions, stats=['mesh2_spectrum'])
+
+        weights += ['default-fkp-oqe', 'default-fkp']
         if postprocess:
-            postprocess_stats(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=postregions, postprocess=postprocess)
+           postprocess_stats(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, postprocess=postprocess, stats=['mesh2_spectrum'])

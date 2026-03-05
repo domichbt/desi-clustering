@@ -371,6 +371,8 @@ def compute_fiducial_png_weights(ell, catalog, tracer='LRG', p=1.):
     catalogs = _make_tuple(catalog, n=2)
     ps = _make_tuple(p, n=2)
 
+    logger.info(f'PNG OQE weights -- tracers: {tracers}, p: {ps}')
+
     def _get_weights(catalogs, tracers, ps):
         wtilde = bias(catalogs[0]['Z'], tracer=tracers[0]) - ps[0]
         w0 = growth_factor(catalogs[1]['Z']) * (bias(catalogs[1]['Z'], tracer=tracers[1]) + growth_rate(catalogs[1]['Z']) / 3)
@@ -381,7 +383,7 @@ def compute_fiducial_png_weights(ell, catalog, tracer='LRG', p=1.):
     if tracers[1] != tracers[0]:
         yield _get_weights(catalogs[::-1], tracers[::-1], ps[::-1])[::-1]
 
-
+        
 def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     """
     Propose fiducial measurement parameters for given tracer and statistic kind.
@@ -418,6 +420,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
         propose_FKP_P0 = {'LRG': 5e4, 'ELG': 2e4, 'QSO': 3e4}
         propose_meshsizes = {'BGS': 700, 'LRG': 700, 'ELG': 700, 'LRG+ELG': 700, 'QSO': 700}
         propose_cellsize = 20.
+        propose_p = {'BGS': 1, 'LRG': 1, 'ELG': 1, 'QSO': 1.4}
     else:
         propose_weight = 'default-FKP'
         propose_zranges = {'BGS': [(0.1, 0.4)], 'LRG': [(0.4, 0.6), (0.6, 0.8), (0.8, 1.1)],
@@ -430,7 +433,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     for stat in ['mesh2_spectrum', 'mesh3_spectrum']:
         propose_fiducial[stat]['mattrs'] = {'meshsize': propose_meshsizes[tracer], 'cellsize': propose_cellsize}
     if 'png' in analysis:
-        propose_fiducial['mesh2_spectrum'].update(ells=(0, 2), optimal_weights=functools.partial(compute_fiducial_png_weights, tracer=tracers))
+        propose_fiducial['mesh2_spectrum'].update(ells=(0, 2), optimal_weights=functools.partial(compute_fiducial_png_weights, tracer=tracers, p=[propose_p[get_simple_tracer(tt)] for tt in tracers]))
     else:
         propose_fiducial['mesh2_spectrum'].update(ells=(0, 2, 4))
         propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal', selection_weights={tracer: functools.partial(compute_fiducial_selection_weights, tracer=tracer) for tracer in tracers})
@@ -1242,7 +1245,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             catalogs[ifn] = (irank, catalog)
 
     rdzw = []
-    for irank, catalog in catalogs:
+    for i, (irank, catalog) in enumerate(catalogs):
         if mpicomm.size > 1:
             catalog = Catalog.scatter(catalog, mpicomm=mpicomm, mpiroot=irank)
         individual_weight = catalog['WEIGHT'].copy()
@@ -1256,14 +1259,14 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
                 individual_weight = catalog['WEIGHT'] * get_binned_weight(catalog, binned_weight['missing_power'])
 
         if 'FKP' in weight_type.upper():
-            if mpicomm.rank == 0: logger.info('Multiplying individual weights by WEIGHT_FKP')
+            if i == 0: logger.info('Multiplying individual weights by WEIGHT_FKP') if FKP_P0 is None else logger.info(f'Multiplying individual weights by FKP weight computed with FKP_P0 = {FKP_P0}')
             if FKP_P0 is not None:
                 catalog['WEIGHT_FKP'] = 1. / (1. + catalog['NX'] * FKP_P0)
             individual_weight *= catalog['WEIGHT_FKP']
 
         if 'noimsys' in weight_type:
             # this assumes that the WEIGHT column contains WEIGHT_SYS
-            if mpicomm.rank == 0: logger.info('Dividing individual weights by WEIGHT_SYS')
+            if i == 0: logger.info('Dividing individual weights by WEIGHT_SYS')
             individual_weight /= catalog['WEIGHT_SYS']
 
         if 'comp' in weight_type:
@@ -1271,7 +1274,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
 
         if 'wsys' in weight_type and not 'noimsys' in weight_type:
             new_wsys = weight_type.split('wsys_')[-1]
-            #logger.info(f'Use a different wsys weight: {new_wsys}')
+            if i == 0: logger.info(f'Use a different wsys weight: {new_wsys}')
             individual_weight *= catalog[new_wsys] / catalog['WEIGHT_SYS'] 
 
         if not return_all_columns:
@@ -1399,7 +1402,7 @@ def write_stats(filename, stats):
     import jax
     filename = Path(filename)
     tmp_filename = filename.with_name(filename.stem + '.tmp' + filename.suffix)
-    if jax.process_index() == 0:
+    if MPI.COMM_WORLD.rank == 0 and jax.process_index() == 0:
         stats.write(tmp_filename)
         logger.info(f'Writing {filename}')
         os.replace(tmp_filename, filename)
