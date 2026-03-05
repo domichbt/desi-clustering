@@ -553,13 +553,18 @@ def compute_window_mesh2_spectrum_fm(
     def _add_photometric_template_values(catalogs: dict[str, mpy.Catalog]):
         return {name: add_photometric_template_values(catalogs[name], regression_maps, **templates_paths_kwargs) for name in catalogs}
 
-    def _split_by_region(particles: ParticleField, pk_regions: list[str]) -> tuple[ParticleField, ...]:
-        if len(pk_regions) == 0:
-            return (particles,)
-        distances = jnp.sqrt(jnp.power(particles.positions, 2).sum(axis=-1))
-        ra = (jnp.arctan2(particles.positions[..., 1], particles.positions[..., 0]) % (2 * jnp.pi)) * 180 / jnp.pi
-        dec = jnp.arcsin(particles.positions[..., 2] / distances) * 180 / jnp.pi
-        return tuple(particles[select_region(ra=ra, dec=dec, region=region)] for region in pk_regions)
+    def _select_region(catalogs: dict[str, mpy.Catalog], pk_region: str) -> dict[str, mpy.Catalog]:
+        return {name: catalog[select_region(ra=catalog["RA"], dec=catalog["DEC"], region=pk_region)] for name, catalog in catalogs.items()}
+
+    def _split_data_randoms(catalogs: dict[str, mpy.Catalog]) -> dict[str, mpy.Catalog]:
+        """Split the randoms into "data" and "randoms" based on the provided ratio. Overwrite original "data"."""
+        data_size = int(data_to_randoms_ratio * catalogs["randoms"].size)  # MPI local
+        randoms_size = catalogs["randoms"].size - data_size
+        rng = mpy.random.MPIRandomState(seed=catalog_split_seed, size=catalogs["randoms"].size)  # Use local sizes
+        mask_is_data = rng.uniform() < (data_size / (data_size + randoms_size))
+        data = catalogs["randoms"][mask_is_data]
+        randoms = catalogs["randoms"][~mask_is_data]
+        return {"data": data, "randoms": randoms}
 
     def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
         return fkp_field.clone(
@@ -585,58 +590,76 @@ def compute_window_mesh2_spectrum_fm(
     mattrs = {name: spectrum.attrs[name] for name in ["boxsize", "boxcenter", "meshsize"]}
 
     with create_sharding_mesh(meshsize=mattrs.get("meshsize", None)):
-        if amr:
+        # Split into "data" and randoms based on the provided ratio
+        def wrap(f):
+            return lambda: _split_data_randoms(f())
+
+        get_data_randoms = [wrap(_get_data_randoms) for _get_data_randoms in get_data_randoms]
+
+        if amr:  # Add photometric template values to the catalogs, if AMR is applied, as they are needed for the regression
 
             def wrap(f):
                 return lambda: _add_photometric_template_values(f())
 
             get_data_randoms = [wrap(_get_data_randoms) for _get_data_randoms in get_data_randoms]
 
+        if len(pk_regions) > 0:  # Split catalogs into pk regions, if specified
+
+            def wrap(f, pk_region):
+                return lambda: _select_region(f(), pk_region)
+
+            get_data_randoms = [
+                wrap(_get_data_randoms, pk_region) for pk_region in pk_regions for _get_data_randoms in get_data_randoms
+            ]  # [func1_region1, func2_region1, func3_region1 ... func1_region2, func2_region2, func3_region2 ...]
+
         all_particles = prepare_jaxpower_particles(
-            *get_data_randoms, mattrs=mattrs, add_randoms=["IDS", "WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights]
+            *get_data_randoms,
+            mattrs=mattrs,
+            add_randoms=["IDS", "WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights],
+            add_data=["WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights],
         )
         all_randoms = [particles["randoms"] for particles in all_particles]
+        all_data = [particles["data"] for particles in all_particles]
         del all_particles
 
-        # Make into one big catalog
-        if len(all_randoms) > 1:
-            all_randoms = ParticleField.concatenate(*all_randoms)
-        else:
-            all_randoms = all_randoms[0]
+        # Make into len(pk_regions) catalogs if split into pk regions, otherwise one catalog
+        nregion = len(pk_regions) if len(pk_regions) > 0 else 1
+        nrandoms = len(all_randoms)
+        chunk_size = nrandoms // nregion
+        all_randoms = [ParticleField.concatenate(all_randoms[chunk_size * i : chunk_size * (i + 1)]) for i in range(nregion)]
+        all_data = [ParticleField.concatenate(all_data[chunk_size * i : chunk_size * (i + 1)]) for i in range(nregion)]
 
-        extra = all_randoms.extra
-        if amr:
-            template_values = jnp.stack([extra.pop(map_name) for map_name in regression_maps], axis=-1)
-            extra.update({"template_values": template_values})
-        # extra already has weight_FKP, just remove from weights=indweights which contains FKP weights
-        all_randoms = all_randoms.clone(extra=extra, weights=all_randoms.weights / all_randoms.extra["WEIGHT_FKP"])
+        for iregion in range(nregion):
+            # Randoms
+            extra = all_randoms[iregion].extra
+            if amr:
+                template_values = jnp.stack([extra.pop(map_name) for map_name in regression_maps], axis=-1)
+                extra.update({"template_values": template_values})
+            # extra already has weight_FKP, just remove from weights=indweights which contains FKP weights
+            all_randoms[iregion] = all_randoms[iregion].clone(extra=extra, weights=all_randoms[iregion].weights / all_randoms[iregion].extra["WEIGHT_FKP"])
 
-        # Determine "data" and "randoms" particles among the randoms catalog
-        data_size = int(data_to_randoms_ratio * all_randoms.weights.size)
-        randoms_size = all_randoms.weights.size - data_size
-        rng = mpy.random.MPIRandomState(seed=catalog_split_seed, size=all_randoms.weights.size)
-        mask_is_data = rng.uniform() < (data_size / (data_size + randoms_size))
-        # Create catalogs and append to the lists
-        data = all_randoms[mask_is_data]
-        randoms = all_randoms[~mask_is_data]
+            # Data
+            extra = all_data[iregion].extra
+            if amr:
+                template_values = jnp.stack([extra.pop(map_name) for map_name in regression_maps], axis=-1)
+                extra.update({"template_values": template_values})
+            all_data[iregion] = all_data[iregion].clone(extra=extra, weights=all_data[iregion].weights / all_data[iregion].extra["WEIGHT_FKP"])
 
-        # Split further into pk_regions
-        data = _split_by_region(data, pk_regions)
-        randoms = _split_by_region(randoms, pk_regions)
+        logger.info("Catalogs ready, starting preparation...")
 
         # Prepare arguments for the window computation function
-        ric_args = prepare_RIC(data=data, randoms=randoms, regions=ric_regions, n_bins=ric_nbins, apply_to="randoms")
+        ric_args = prepare_RIC(data=all_data, randoms=all_randoms, regions=ric_regions, n_bins=ric_nbins, apply_to="randoms")
 
         if amr:
             extra_effects = "RIC+AMR"
-            amr_args = prepare_AMR(data=data, randoms=randoms, regions_zranges=amr_regions_zranges, apply_to="randoms")
+            amr_args = prepare_AMR(data=all_data, randoms=all_randoms, regions_zranges=amr_regions_zranges, apply_to="randoms")
         else:
             extra_effects = "RIC"
             amr_args = None
 
         # Turn into FKP fields
-        fkp_fields = [FKPField(data=d, randoms=r, attrs=mattrs) for d, r in zip(data, randoms, strict=True)]
-        del data, randoms
+        fkp_fields = [FKPField(data=d, randoms=r, attrs=mattrs) for d, r in zip(all_data, all_randoms, strict=True)]
+        del all_data, all_randoms
         # Compute FKP normalization for each region, with the estimator weights, and for each ell if optimal weights are applied
         if optimal_weights is None:
             # Using FKP weights which are symetrical, so this remains an autocorr
