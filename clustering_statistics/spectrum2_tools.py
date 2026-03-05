@@ -740,7 +740,7 @@ def compute_window_mesh2_spectrum_fm(
                 windows["geometry"] = {}
 
             for ell in ellsout:
-                binner = BinMesh2SpectrumPoles(mattrs, edges=spectrum.get(ell).edges("k"), ells=[ell])  # TODO: check edges are ok
+                binner = BinMesh2SpectrumPoles(fkp_fields[0].attrs, edges=spectrum.get(ell).edges("k"), ells=[ell])  # TODO: check edges are ok
                 fkp_fields = [_attach_weights(fkp_field, ell) for fkp_field in fkp_fields]
                 # Compute FKP normalization for each region, with the estimator weights (cross correlation), and for given ell = binner
                 fkp_norms = [
