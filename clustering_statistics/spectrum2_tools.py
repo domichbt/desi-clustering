@@ -478,7 +478,7 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
 def compute_window_mesh2_spectrum_fm(
     *get_data_randoms: Callable,
     spectrum: types.Mesh2SpectrumPoles,
-    theory: types.Mesh2SpectrumPoles | None,
+    theory: types.Mesh2SpectrumPoles,
     optimal_weights: Callable | None,
     data_to_randoms_ratio: float,
     catalog_split_seed: int,
@@ -503,9 +503,9 @@ def compute_window_mesh2_spectrum_fm(
     *get_data_randoms : Callable
         Functions that return tuples of (data, randoms) catalogs.
     spectrum : lsstypes.Mesh2SpectrumPoles
-        Measured 2-point spectrum multipoles.
-    theory: lsstypes.Mesh2SpectrumPoles | None
-        input theory power spectrum, used as a fiducial for the derivative. Attributes (e.g. ells) used for mock survey generation. If ``None``, the input spectrum is used as a fiducial.
+        Measured 2-point spectrum multipoles. Only used for their attributes, not their values.
+    theory: lsstypes.Mesh2SpectrumPoles
+        Input theory power spectrum, used as a fiducial for the derivative. Attributes (e.g. ells) used for mock survey generation; value used for the derivative.
     optimal_weights : Callable or None
         Function taking (ell, catalog) as input and returning total weights to apply to data and randoms.
         It can have an optional attribute 'columns' that specifies which additional columns are needed to compute the optimal weights.
@@ -582,7 +582,6 @@ def compute_window_mesh2_spectrum_fm(
             ),
         )
 
-    theory = theory or spectrum  # if None
     pk_regions = pk_regions or []
     columns_optimal_weights = []
     if optimal_weights is not None:
@@ -911,7 +910,7 @@ def run_preliminary_fit_mesh2_spectrum(data: types.Mesh2SpectrumPoles, window: t
             if ell in smooth.ells:
                 pole = smooth.get(ells=ell)
             else:
-                pole = smooth.get(ells=0).clone(ell=ell)
+                pole = smooth.get(ells=0).clone(meta={"ell": ell})
                 if ell != 0:
                     pole = pole.clone(num_shotnoise=np.zeros_like(pole.values("num_shotnoise")))
             theory.init.update(k=pole.coords("k"))
