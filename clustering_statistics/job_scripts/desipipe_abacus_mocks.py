@@ -57,17 +57,17 @@ def run_stats(tracer='LRG', version='abacus-2ndgen-complete', complete=False, im
     for imock in imocks:
         regions = ['NGC', 'SGC'][:1]
         for region in regions:
-            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
+            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
             if complete:
                 options['catalog']['complete'] = {}
                 get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete')
-            #else:
-            #    get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
+            else:
+                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
             #    options['catalog']['reshuffle'] = {'merged_data_fn': tools.get_catalog_fn(kind='data', **(options['catalog'] | dict(region='ALL')))}
             #    get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='reshuffle')
             options = fill_fiducial_options(options)
-            for tracer in options['catalog']:
-                options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran'])}
+            #for tracer in options['catalog']:
+            #    options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran'])}
             compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
 
 
@@ -99,9 +99,9 @@ if __name__ == '__main__':
     stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
     #version = 'abacus-2ndgen-complete'
     version = 'abacus-2ndgen-altmtl'
-    complete = True
+    complete = False
 
-    for tracer in ['BGS_BRIGHT-21.35', 'LRG', 'ELG_LOP', 'QSO'][2:3]:
+    for tracer in ['BGS_BRIGHT-21.35', 'LRG', 'ELG_LOP', 'QSO'][1:]:
         if tracer == 'ELG_LOP' and 'altmtl' in version: tracer = 'ELG_LOPnotqso'
         if False:
             exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=list(range(1001)))[:2]
