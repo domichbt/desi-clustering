@@ -906,9 +906,19 @@ def run_preliminary_fit_mesh2_spectrum(data: types.Mesh2SpectrumPoles, window: t
     profiles = profiler.maximize()
     params = profiles.bestfit.choice(index='argmax', input=True)
     if out is None:
-        theory.init.update(k=smooth.get(0).coords('k'))
-        poles = theory(**params)
-        smooth = smooth.clone(value=poles.ravel())
+        poles = []
+        for ill, ell in enumerate(theory.ells):
+            if ell in smooth.ells:
+                pole = smooth.get(ells=ell)
+            else:
+                pole = smooth.get(ells=0).clone(ell=ell)
+                if ell != 0:
+                    pole = pole.clone(num_shotnoise=np.zeros_like(pole.values("num_shotnoise")))
+            theory.init.update(k=pole.coords("k"))
+            value = theory(**params)[ill]
+            pole = pole.clone(value=value)
+            poles.append(pole)
+        smooth = types.Mesh2SpectrumPoles(poles, attrs=smooth.attrs)
     else:
         value = []
         for label, pole in out.items(level=1):
