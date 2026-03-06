@@ -271,7 +271,11 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
 
         for stat, func in funcs.items():
             if stat in stats:
+                if len(tracers) > 1:
+                    raise NotImplementedError("Forward model window function not yet implemented for cross-correlations")
+
                 window_options = dict(options[stat])
+                selection_weights = window_options.pop("selection_weights", None)
 
                 def get_data(tracer):
                     czrandoms = Catalog.concatenate(zrandoms[tracer])
@@ -292,19 +296,6 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                         tracers2 = tracers2[::-1]
                     return types.read(fns[tracers2])
 
-                # Get an example of ouput measurement
-                spectrum_fn = window_options.pop("spectrum", None)
-                fn_window_options = window_options | dict(auw=False, cut=False)
-                if spectrum_fn is None:
-                    spectrum_stat = stat.replace("window_", "").replace("_fm", "")
-                    fn_window_options = options[spectrum_stat] | fn_window_options
-                    spectrum_fn = get_stats_fn(
-                        kind=spectrum_stat,
-                        catalog=fn_catalog_options,
-                        **(options[spectrum_stat] | dict(auw=False, cut=False)),
-                    )
-                spectrum = types.read(spectrum_fn)
-
                 # Get fiducial theory for derivative
                 theory_stat = stat.replace("window_", "theory_").replace("_fm", "")
                 theory_fn = window_options.pop("theory", None)
@@ -319,49 +310,55 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                             )
                             fn = window_options.pop(name, None)
                             if fn is None:
-                                kw = options[kind_stat] | dict(auw=False, cut=False)
-                                fn = {
-                                    (tracer, tracer): get_stats_fn(
-                                        kind=kind_stat,
-                                        catalog=fn_catalog_options[tracer],
-                                        **kw | {"region": pk_region},
-                                    )
-                                    for tracer in tracers
-                                }
-                                if len(tracers) > 1:
-                                    for pk_region in window_options["pk_regions"]:
-                                        fn[tuple(tracers)] = get_stats_fn(kind=kind_stat, catalog=fn_catalog_options, **kw)
-                            elif not isinstance(fn, dict):
-                                _check_fn(fn, tracers, name=name)
+                                kw = options[kind_stat] | {"auw": False, "cut": False}
+                                fn = get_stats_fn(
+                                    kind=kind_stat,
+                                    catalog=fn_catalog_options[tracers[0]],
+                                    **kw | {"region": pk_region},
+                                )
                             products_fn[pk_region][name] = fn
 
-                    theory_fn = {}
-                    for tracers2 in itertools.combinations_with_replacement(tracers, r=2):
-                        spectra = [_read_tracer(products_fn[pk_region]["spectrum"], tracers2) for pk_region in window_options["pk_regions"]]
-                        windows = [_read_tracer(products_fn[pk_region]["window"], tracers2) for pk_region in window_options["pk_regions"]]
-                        theory = sum([run_preliminary_fit_mesh2_spectrum(data=spectrum, window=window) for spectrum, window in zip(spectra, windows, strict=True)])
-                        theory_fn[tracers2] = get_stats_fn(
-                            kind=theory_stat,
-                            catalog=(
-                                fn_catalog_options[tracers2[0]] if tracers2[1] == tracers2[0] else {tracer: fn_catalog_options[tracer] for tracer in tracers2}
-                            ),
-                        )
-                        tools.write_stats(theory_fn[tracers2], theory)
-                else:
-                    _check_fn(theory_fn, tracers, name="theory")
+                    spectra = [types.read(products_fn[pk_region]["spectrum"]) for pk_region in window_options["pk_regions"]]
+                    windows = [types.read(products_fn[pk_region]["window"]) for pk_region in window_options["pk_regions"]]
+                    theory = types.sum(
+                        [run_preliminary_fit_mesh2_spectrum(data=spectrum, window=window) for spectrum, window in zip(spectra, windows, strict=True)]
+                    )
+                    spectrum = types.sum(spectra)
+                    theory_fn = get_stats_fn(
+                        kind=theory_stat,
+                        catalog=(fn_catalog_options[tracers[0]]),
+                    )
+                    tools.write_stats(theory_fn, theory)
 
-                jax.experimental.multihost_utils.sync_global_devices("theory")  # Sync across devices such that theory ready for window
-                fields = {tracer: tools.get_simple_tracer(tracer) for tracer in tracers}
-                theory = {tuple(fields[tracer] for tracer in tracers2): _read_tracer(theory_fn, tracers2) for tracers2 in itertools.product(tracers, repeat=2)}
-                theory = types.ObservableTree(list(theory.values()), fields=list(theory.keys()))
+                theory = types.read(theory_fn)
+
+                # Load example of output measurement. If spectrum_fn provided, use it; otherwise use spectrum loaded for the preliminary fit in the theory block above
+                spectrum_fn = window_options.pop("spectrum", None)
+                fn_window_options = window_options | {"auw": False, "cut": False}
+                if spectrum_fn is None:
+                    spectrum_fn = {}
+                    spectrum_stat = stat.replace("window_", "").replace("_fm", "")
+                    for pk_region in window_options["pk_regions"]:
+                        fn_window_options = options[spectrum_stat] | fn_window_options
+                        spectrum_fn[pk_region] = get_stats_fn(
+                            kind=spectrum_stat,
+                            catalog=fn_catalog_options,
+                            **(options[spectrum_stat] | {"auw": False, "cut": False} | {"region": pk_region}),
+                        )
+                    spectrum = types.sum([types.read(spectrum_fn[pk_region]) for pk_region in window_options["pk_regions"]])
+                else:
+                    spectrum = types.read(spectrum_fn)
 
                 # Now compute window function using forward model
-                window = func(*[functools.partial(get_data, tracer) for tracer in tracers], spectrum=spectrum, **window_options)
+                window = func(*[functools.partial(get_data, tracer) for tracer in tracers], spectrum=spectrum, theory=theory, **window_options)
                 # This is a dict of dict of lists of windows : {modeled_effect:{pk_region:[window, ...], ...}, ...}
                 for effect in window:  # geo, RIC or RIC+AMR
                     for pk_region in window[effect]:  # eg NGC, SGC
-                        fn = get_stats_fn(kind=stat, catalog=fn_catalog_options, **(fn_window_options | {"extra": effect, "region": pk_region}))
-                        tools.write_stats(fn, window[effect][pk_region])
+                        for i, seed in enumerate(window_options["seeds"]):
+                            fn = get_stats_fn(
+                                kind=stat, catalog=fn_catalog_options, **(fn_window_options | {"extra": f"{effect}_seed={seed}", "region": pk_region})
+                            )
+                            tools.write_stats(fn, window[effect][pk_region][i])
 
         # Covariance matrix
         funcs = {'covariance_mesh2_spectrum': compute_covariance_mesh2_spectrum}
