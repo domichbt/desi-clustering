@@ -582,6 +582,9 @@ def compute_window_mesh2_spectrum_fm(
             ),
         )
 
+    def _safe_divide(a, b):
+        return jnp.where(b != 0, a / b, 0.0)
+
     pk_regions = pk_regions or []
     columns_optimal_weights = []
     if optimal_weights is not None:
@@ -641,14 +644,16 @@ def compute_window_mesh2_spectrum_fm(
                 template_values = jnp.stack([extra.pop(map_name) for map_name in regression_maps], axis=-1)
                 extra.update({"template_values": template_values})
             # extra already has weight_FKP, just remove from weights=indweights which contains FKP weights
-            all_randoms[iregion] = all_randoms[iregion].clone(extra=extra, weights=all_randoms[iregion].weights / all_randoms[iregion].extra["WEIGHT_FKP"])
+            all_randoms[iregion] = all_randoms[iregion].clone(
+                extra=extra, weights=_safe_divide(all_randoms[iregion].weights, all_randoms[iregion].extra["WEIGHT_FKP"])
+            )
 
             # Data
             extra = all_data[iregion].extra
             if amr:
                 template_values = jnp.stack([extra.pop(map_name) for map_name in regression_maps], axis=-1)
                 extra.update({"template_values": template_values})
-            all_data[iregion] = all_data[iregion].clone(extra=extra, weights=all_data[iregion].weights / all_data[iregion].extra["WEIGHT_FKP"])
+            all_data[iregion] = all_data[iregion].clone(extra=extra, weights=_safe_divide(all_data[iregion].weights, all_data[iregion].extra["WEIGHT_FKP"]))
 
         logger.info("Catalogs ready, starting preparation...")
 
@@ -752,15 +757,15 @@ def compute_window_mesh2_spectrum_fm(
                     data=fkp_field.data.clone(
                         extra=fkp_field.data.extra
                         | {
-                            "weight_optimal_1": data_w1 / fkp_field.data.weights,
-                            "weight_optimal_2": data_w2 / fkp_field.data.weights,
+                            "weight_optimal_1": _safe_divide(data_w1, fkp_field.data.weights),
+                            "weight_optimal_2": _safe_divide(data_w2, fkp_field.data.weights),
                         }
                     ),
                     randoms=fkp_field.randoms.clone(
                         extra=fkp_field.randoms.extra
                         | {
-                            "weight_optimal_1": randoms_w1 / fkp_field.randoms.weights,
-                            "weight_optimal_2": randoms_w2 / fkp_field.randoms.weights,
+                            "weight_optimal_1": _safe_divide(randoms_w1, fkp_field.randoms.weights),
+                            "weight_optimal_2": _safe_divide(randoms_w2, fkp_field.randoms.weights),
                         }
                     ),
                 )
