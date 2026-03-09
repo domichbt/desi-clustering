@@ -877,7 +877,9 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', kin
     battrs = kwargs.get('battrs', None)
     if battrs is not None: corr_type = ''.join(list(battrs))
     if 'particle2_correlation' in kind:
-        kind = f'particle2_correlation_{corr_type}'
+        full = f'particle2_correlation_{corr_type}'
+        if full not in kind:
+            kind = kind.replace('particle2_correlation', full)
     if 'mesh2_spectrum' in kind:
         full = 'mesh2_spectrum_poles'
         if full not in kind:
