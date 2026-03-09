@@ -109,6 +109,11 @@ def get_cosmology():
     -------
     cosmo : Cosmoprimo
     fiducial : cosmoprimo.Cosmology
+    nparams_cosmo : int
+        Number of free (non-fixed) cosmological parameters in ``param_config``.
+        Counted directly from the config dict to avoid CLASS-internal parameters
+        (e.g. ``theta_MC_100``) that appear non-fixed in ``cosmo.params`` but
+        are not actually sampled in the MCMC.
     """
     cosmo = Cosmoprimo(engine='class')
     cosmo.init.params['H0'] = dict(derived=True)
@@ -126,8 +131,9 @@ def get_cosmology():
     }
     for name, cfg in param_config.items():
         cosmo.params[name].update(**cfg)
+    nparams_cosmo = sum(1 for cfg in param_config.values() if not cfg.get('fixed', False))
 
-    return cosmo, fiducial
+    return cosmo, fiducial, nparams_cosmo
 
 
 # ─── Nuisance priors ─────────────────────────────────────────────────────────
@@ -442,6 +448,8 @@ def get_observables(
     A_full_status=False,
     damping='lor',
     cuts_kwargs=None,
+    cov_corrections=('hartlap', 'percival'),
+    no_analytic_marg=False,
 ):
     """Build desilike observables for a given tracer and fit mode.
 
@@ -475,6 +483,15 @@ def get_observables(
         Use the full A-matrix in FOLPS.
     damping : str
         FoG damping kernel.
+    cov_corrections : sequence of str, default=('hartlap', 'percival')
+        Covariance correction factors to apply.  Any combination of
+        'hartlap' and 'percival'.  Pass an empty sequence to skip.
+        Forwarded to prepare_fiducial_likelihoods.
+    no_analytic_marg : bool, default=False
+        When True, skip analytic marginalisation.  Affects the Percival
+        ``nparams`` count: if marginalisation is active, the marginalised
+        EFT/shot-noise parameters are excluded because they are integrated
+        out exactly and do not propagate through the noisy covariance.
 
     Returns
     -------
@@ -484,6 +501,29 @@ def get_observables(
     """
     tracer_label, zrange = TRACER_CONFIG[tracer]
     stats = FIT_TYPE_STATS[fit_type]
+
+    # Build cosmology first so we can count free parameters for the
+    # Percival correction before loading the likelihood.
+    cosmo, fiducial, nparams_cosmo = get_cosmology()
+    sigma8_fid = fiducial.sigma8_z(TRACER_REDSHIFTS[tracer])
+    nuisance_params = get_nuisance_priors(
+        fit_type, prior_basis, width_EFT, width_SN0, width_SN2,
+        pt_model=pt_model, b3_coev=b3_coev, sigma8_fid=sigma8_fid,
+    )
+    # Analytically marginalised parameters are integrated out exactly and do
+    # not propagate through the noisy covariance, so they should not count
+    # toward the Percival nparams correction.
+    if _is_physical_basis(prior_basis):
+        marg_param_names = {'alpha0p', 'alpha2p', 'alpha4p', 'sn0p', 'sn2p'}
+    else:
+        marg_param_names = {'alpha0', 'alpha2', 'alpha4', 'sn0', 'sn2'}
+    use_analytic_marg = not no_analytic_marg and fit_type in ('ps', 'joint')
+    excluded = marg_param_names if use_analytic_marg else set()
+    nparams_nuisance = sum(
+        1 for name, p in nuisance_params.items()
+        if not p.get('fixed', False) and name not in excluded
+    )
+    nparams = nparams_cosmo + nparams_nuisance
 
     print(f'  Loading precomputed likelihood  (fit_type={fit_type})')
     lk = prepare_fiducial_likelihoods(
@@ -495,12 +535,13 @@ def get_observables(
         data=data,
         covariance=covariance,
         cuts_kwargs=cuts_kwargs,
+        cov_corrections=list(cov_corrections),
+        nparams=nparams,
     )
 
     # Full covariance matrix (needed for ObservablesGaussianLikelihood)
     full_cov = lk.covariance.value()
 
-    cosmo, fiducial = get_cosmology()
     theories = get_theory(
         tracer, fit_type, fiducial, cosmo,
         pt_model=pt_model, prior_basis=prior_basis,
@@ -803,6 +844,12 @@ if __name__ == '__main__':
         '--no_analytic_marg', action='store_true',
         help='Disable analytic marginalisation of PS nuisance parameters.',
     )
+    parser.add_argument(
+        '--cov_corrections', nargs='*', default=['hartlap', 'percival'],
+        choices=['hartlap', 'percival'],
+        help='Covariance correction factors to apply (default: hartlap percival). '
+             'Pass --cov_corrections with no arguments to disable all corrections.',
+    )
     out_dir = Path(os.getenv('SCRATCH')) / 'fits'
     parser.add_argument('--out_dir', type=str, default=out_dir,
                        help=f'Output directory for fitting results, default is {out_dir}')
@@ -845,6 +892,8 @@ if __name__ == '__main__':
             width_SN0=args.width_SN0,
             width_SN2=args.width_SN2,
             cuts_kwargs=cuts_kwargs,
+            cov_corrections=args.cov_corrections,
+            no_analytic_marg=args.no_analytic_marg,
         )
 
     # ── Optionally fit / load emulators ───────────────────────────────────
