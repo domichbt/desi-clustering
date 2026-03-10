@@ -330,6 +330,7 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                     )
                     tools.write_stats(theory_fn, theory)
 
+                jax.experimental.multihost_utils.sync_global_devices("theory")  # such that theory ready for window
                 theory = types.read(theory_fn)
 
                 # Load example of output measurement. If spectrum_fn provided, use it; otherwise use spectrum loaded for the preliminary fit in the theory block above
