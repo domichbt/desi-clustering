@@ -654,6 +654,7 @@ def compute_window_mesh2_spectrum_fm(
                 template_values = jnp.stack([extra.pop(map_name) for map_name in regression_maps], axis=-1)
                 extra.update({"template_values": template_values})
             all_data[iregion] = all_data[iregion].clone(extra=extra, weights=_safe_divide(all_data[iregion].weights, all_data[iregion].extra["WEIGHT_FKP"]))
+        del extra
 
         logger.info("Catalogs ready, starting preparation...")
 
@@ -663,6 +664,15 @@ def compute_window_mesh2_spectrum_fm(
         if amr:
             extra_effects = "RIC+AMR"
             amr_args = prepare_AMR(data=all_data, randoms=all_randoms, regions_zranges=amr_regions_zranges, apply_to="randoms")
+            for iregion in range(nregion):
+                extra = all_randoms[iregion].extra
+                del extra["template_values"]
+                all_randoms[iregion] = all_randoms[iregion].clone(extra=extra)
+                # data
+                extra = all_data[iregion].extra
+                del extra["template_values"]
+                all_data[iregion] = all_data[iregion].clone(extra=extra)
+            del extra
         else:
             extra_effects = "RIC"
             amr_args = None
