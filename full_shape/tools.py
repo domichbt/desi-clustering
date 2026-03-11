@@ -1,3 +1,22 @@
+"""
+In this file we propose a dictionary-like interface to building :mod:`desilike` likelihoods.
+
+Important functions are:
+- :func:`generate_likelihood_options_helper`, helper to generate dictionary of options
+- :func:`get_stats`: read clustering statistics from disk
+- :func:`get_theory`: build desilike theory
+- :func:`get_single_likelihood` return single desilike likelihood (that can be summed up with others)
+- :func:`get_fits_fn`: proposed path to output fits.
+
+Dictionary of options are organized as follows:
+- list of dictionaries, one for each independent (summed) likelihood;
+- each of this dictionary is {'observables': [observable1, observable2, ...], 'covariance': covariance options}
+- each of observable1, observable2, ... is a dictionary that specifies how to build the desilike
+observable (data, theory, window): ``{'stat': {'kind': ..., 'basis': ..., 'select': {...}},
+'catalog': {'version':, ...}, 'theory': {'model': ...}, 'window': {}}``.
+"""
+
+
 import os
 import logging
 from pathlib import Path
@@ -15,23 +34,23 @@ logger = logging.getLogger('tools')
 
 
 def get_cosmology():
-    """Return a desilike Cosmoprimo calculator and the DESI fiducial cosmology.
-
-    The calculator has free parameters h, omega_cdm, omega_b, logA with
-    uniform priors; n_s and tau_reio are fixed.  A Gaussian prior is placed
-    on omega_b from simulations.
+    """
+    Construct and return a :mod:`desilike` :class:`Cosmoprimo` calculator and the DESI fiducial.
 
     Returns
     -------
-    cosmo : Cosmoprimo
-    fiducial : cosmoprimo.Cosmology
+    (cosmo, fiducial)
+        - cosmo: :class:`desilike.theories.Cosmoprimo` instance with configured priors.
+        - fiducial: :class:`cosmoprimo.fiducial.DESI` instance used as fiducial cosmology.
     """
     from desilike.theories import Cosmoprimo
     from cosmoprimo.fiducial import DESI
 
     fiducial = DESI()
     cosmo = Cosmoprimo(engine='class', fiducial=fiducial)
-
+    # Free parameters h, omega_cdm, omega_b, logA with uniform priors
+    # n_s and tau_reio are fixed
+    # A Gaussian prior on omega_b.
     params = {
         'H0':       {'derived': True},
         'Omega_m':  {'derived': True},
@@ -53,29 +72,28 @@ def get_cosmology():
 
 
 def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, sigma8_fid=1.):
-    """Build a dict of nuisance parameter prior configurations.
+    """
+    Build a dictionary of parameter priors.
 
     Parameters
     ----------
     model : str
-        PT model tag. When 'EFT', FoG parameters are fixed.
+        Perturbation theory model tag. When 'EFT', FoG parameters are fixed.
     stat : str
-        Observable, ['mesh2_spectrum', 'mesh2_spectrum'].
+        Observable; one of ['mesh2_spectrum', 'mesh2_spectrum'].
     prior_basis : str
-        'physical' or 'physical_aap' uses physical bias parameters
-        (b1p, b2p,...).  Any other value uses the standard Eulerian basis
-        (b1, b2, ...).
+        'physical' or 'physical_aap' uses physical bias parameters (b1p, b2p,...).
+        Any other value uses the standard Eulerian basis (b1, b2, ...).
     b3_coev : bool
         Fix b3 to its co-evolution value.
-    sigma8_fid : float or None
+    sigma8_fid : float, optional
         Fiducial sigma_8(z_eff), used as prior centre in the physical basis.
 
     Returns
     -------
     params : dict[str, dict]
         Maps parameter name to a dict of keyword arguments accepted by
-        ``Parameter.update()`` (e.g. ``{'fixed': True}`` or
-        ``{'prior': {...}}``).
+        :meth:`Parameter.update` (e.g. ``{'fixed': True}`` or ``{'prior': {...}}``).
     """
     params = {}
     scale_eft = 12.5
@@ -151,6 +169,25 @@ def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, 
 
 
 def get_theory(stat: str, theory: dict, z: float, cosmo, fiducial):
+    """
+    Return a configured theory desilike calculator for the requested statistic.
+
+    Parameters
+    ----------
+    stat : str
+        Statistic name, e.g. 'mesh2_spectrum' or 'mesh3_spectrum'.
+    theory : dict
+        Theory options dict containing at least 'model' and possibly other keys.
+    z : float
+        Effective redshift.
+    cosmo, fiducial : objects
+        Cosmology calculator and fiducial cosmology to pass to templates.
+
+    Returns
+    -------
+    theory : BaseCalculator
+        Initialized theory object from desilike for the requested statistic.
+    """
     from desilike.theories.galaxy_clustering import (DirectPowerSpectrumTemplate, REPTVelocileptorsTracerPowerSpectrumMultipoles,
     FOLPSv2TracerPowerSpectrumMultipoles, FOLPSv2TracerBispectrumMultipoles)
     template = DirectPowerSpectrumTemplate(fiducial=fiducial, cosmo=cosmo, z=z)
@@ -183,6 +220,22 @@ def get_theory(stat: str, theory: dict, z: float, cosmo, fiducial):
 
 
 def pack_stats(stats, **labels):
+    """
+    Pack a list of stat-like objects into a single :class:`types.ObservableTree` or :class:`types.WindowMatrix`.
+
+    Parameters
+    ----------
+    stats : list[ObservableLike, WindowMatrix]
+        List of statistics objects to pack.
+    labels : mapping
+        Labels to attach to the resulting container.
+        E.g. ``observables=['spectrum2', 'spectrum3'], tracers=[('LRG', 'LRG'), ('LRG', 'LRG', 'LRG')]``
+        for the combined power spectrum and bispectrum.
+
+    Returns
+    -------
+    Packed types.ObservableTree or types.WindowMatrix
+    """
     if isinstance(stats[0], types.ObservableLike):
         return types.ObservableTree(stats, **labels)
     elif isinstance(stats[0], types.WindowMatrix):
@@ -200,6 +253,20 @@ def pack_stats(stats, **labels):
 
 
 def unpack_stats(stats):
+    """
+    Unpack packed stats structures into individual windows/observables.
+
+    Parameters
+    ----------
+    stats : types.ObservableLike | types.WindowMatrix | types.GaussianLikelihood
+        If ObservableLike, returns a list of observables
+        If WindowMatrix, returns a list of window matrices
+        If GaussianLikelihood, returns a tuple[list of observables, list of window matrices, covariance]
+
+    Returns
+    -------
+    Unpacked statistics.
+    """
     if isinstance(stats, types.ObservableLike):
         return stats.flatten(level=1)  # iter over labels
     elif isinstance(stats, types.WindowMatrix):
@@ -213,15 +280,41 @@ def unpack_stats(stats):
         return (unpack_stats(likelihood.observable), unpack_stats(likelihood.window), likelihood.covariance)
 
 
-def get_stats(observables: list, covariance: dict=None, unpack: bool=False, get_stats_fn=clustering_tools.get_stats_fn, cache_dir: str | Path=None):
+def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False,
+              get_stats_fn=clustering_tools.get_stats_fn, cache_dir: str | Path=None):
+    """
+    Load and assemble measurement products (data, windows, covariance).
 
+    This function:
+      - reads per-statistic measurement files determined by `observables`;
+      - optionally caches the assembled likelihood;
+      - constructs mock-based covariance from available mock files;
+      - returns a :class:`types.GaussianLikelihood` (or unpacked components if requested).
+
+    Parameters
+    ----------
+    observables : list[dict]
+        List of observable option dicts describing which stats to load.
+    covariance : dict or None
+        Options used to locate covariance/mock files.
+    unpack : bool, optional
+        If ``True`` return unpacked (data, windows, covariance) rather than a :class:`types.GaussianLikelihood`.
+    get_stats_fn : callable
+        Function used to locate stats files.
+    cache_dir : str or Path, optional
+        Directory to use for caching assembled likelihoods.
+
+    Returns
+    -------
+    types.GaussianLikelihood or tuple
+    """
     observables_options = observables
     cache_fn = None
     if cache_dir is not None:
         cache_dir = Path(cache_dir)
         _str_from_options = str_from_likelihood_options({'observables': observables_options, 'covariance': covariance}, level={'catalog': 100, 'select': 100})
         cache_fn = cache_dir / 'prepared_stats' / f'{_str_from_options}.h5'
-        if False: #cache_fn.exists():
+        if cache_fn.exists():
             logger.info(f'Reading cached stats {cache_fn}.')
             likelihood = types.read(cache_fn)
             if unpack:
@@ -231,11 +324,10 @@ def get_stats(observables: list, covariance: dict=None, unpack: bool=False, get_
     # Helper: iterate over (stat, tracer) combinations
     def iter_stat_tracer_combinations(observables_options, **kwargs):
         """
-        Yield (key, labels, file_kwargs) for every (stat, tracer) combination.
+        Yield (stat, labels, file_kwargs, observable_options) for each requested observable.
 
-        key        : (stat, tracer) — identifies the combination.
-        labels     : {'observables': ..., 'tracers': ...} for ObservableTree.
-        file_kwargs: keyword arguments to pass to get_stats_fn.
+        Compact helper for iterating the user-provided observables and producing file kwargs
+        and labeling information used when reading files.
         """
         for observable_options in observables_options:
             stat = observable_options['stat']['kind']
@@ -256,6 +348,12 @@ def get_stats(observables: list, covariance: dict=None, unpack: bool=False, get_
             yield stat, labels, file_kw, dict(observable_options)
 
     def _apply_select(observable: types.ObservableTree, select: dict=None):
+        """
+        Apply a selection (k-range, ell selection) to an observable.
+
+        The selection dict keys are multipoles (ell) and values are slice-like
+        specifications or (min, max, [step]) tuples.
+        """
         if select is None:
             return observable
         for ell, limit in select.items():
@@ -324,6 +422,26 @@ def get_stats(observables: list, covariance: dict=None, unpack: bool=False, get_
 
 def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=None,
                           cosmo=None, fiducial=None, get_stats_fn=clustering_tools.get_stats_fn, cache_dir:str | Path=None):
+    """
+    Build a single :mod:`desilike` Gaussian likelihood from provided options.
+
+    Parameters
+    ----------
+    likelihood_options : dict
+        Options containing 'observables' list and 'covariance' dict.
+    stats : types.GaussianLikelihood or None
+        Preloaded measurements (if ``None`` they will be loaded via :func:`get_stats`).
+    cosmo, fiducial : optional
+        Cosmology objects; if not provided, constructed via get_cosmology.
+    get_stats_fn : callable, optional
+        Function to locate measurement files.
+    cache_dir : str | Path, optional
+        Directory used for caching pre-computed emulators.
+
+    Returns
+    -------
+    ObservablesGaussianLikelihood
+    """
     from desilike.observables.galaxy_clustering import TracerSpectrum2PolesObservable, TracerSpectrum3PolesObservable
     from desilike.likelihoods import ObservablesGaussianLikelihood
     # likelihood_options: {'observables': [observable_options], 'covariance': {}}
@@ -375,14 +493,20 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
     return ObservablesGaussianLikelihood(observables, covariance=covariance.value())
 
 
-def get_likelihood(likelihoods_options, cosmo=None, fiducial=None, get_stats_fn=clustering_tools.get_stats_fn, cache_dir:str | Path=None):
+def get_likelihood(likelihoods_options: dict | list[dict], cosmo=None, fiducial=None, get_stats_fn=clustering_tools.get_stats_fn, cache_dir:str | Path=None):
     """
     Build a desilike :class:`SumLikelihood, summed over all tracers.
 
     Parameters
     ----------
-    likelihoods_options : list
-        List of options {'observables': [observable_options, ...], 'covariance': {}}
+    likelihoods_options : dict, list[dict]
+        List of options {'observables': [observable_options, ...], 'covariance': {}}.
+    cosmo, fiducial : optional
+        Cosmology objects; if not provided, constructed via get_cosmology.
+    get_stats_fn : callable, optional
+        Function to locate measurement files.
+    cache_dir : str | Path, optional
+        Directory used for caching pre-computed emulators.
 
     Returns
     -------
@@ -399,9 +523,7 @@ def get_likelihood(likelihoods_options, cosmo=None, fiducial=None, get_stats_fn=
 
 
 def propose_fiducial_observable_options(stat, tracer=None, zrange=None):
-    """
-    Propose fiducial fitting options for given tracer and input kind.
-    """
+    """Propose fiducial fitting options for given statistics and tracer."""
     propose_fiducial = {'stat': {'kind': stat},
                         'catalog': {'weight': 'default-FKP'},
                         'theory': {'model': 'folpsD', 'prior_basis': 'physical_aap', 'damping': 'lor', 'marg': True},
@@ -420,10 +542,12 @@ def propose_fiducial_observable_options(stat, tracer=None, zrange=None):
 
 
 def propose_fiducial_covariance_options():
+    """Return dictionary of default covariance options."""
     return {'version': 'holi-v1-altmtl'}
 
 
 def propose_fiducial_sampler_options(sampler=None):
+    """Return dictionary of default sampler configuration."""
     if sampler is None:
         sampler = 'emcee'
     fiducial_options = {'sampler': sampler, 'init': {},' run': {}, 'nchains': 4}
@@ -431,6 +555,7 @@ def propose_fiducial_sampler_options(sampler=None):
 
 
 def propose_fiducial_profiler_options(profiler=None):
+    """Return dictionary of default profiler configuration."""
     if profiler is None:
         profiler = 'minuit'
     fiducial_options = {'profiler': profiler, 'init': {}, 'maximize': {}}
@@ -438,7 +563,7 @@ def propose_fiducial_profiler_options(profiler=None):
 
 
 def fill_fiducial_observable_options(options):
-    """Fill missing options with fiducial values."""
+    """Fill missing observable options with fiducial values."""
     options = dict(options)
     stat = options['stat']['kind']
     tracer, zrange = (options['catalog'][name] for name in ['tracer', 'zrange'])
@@ -450,6 +575,7 @@ def fill_fiducial_observable_options(options):
 
 
 def fill_fiducial_likelihood_options(options):
+    """Fill missing likelihood options with fiducial values."""
     if isinstance(options, dict):
         options = dict(options)
         options['observables'] = [fill_fiducial_observable_options(options) for options in options['observables']]
@@ -459,6 +585,7 @@ def fill_fiducial_likelihood_options(options):
 
 
 def fill_fiducial_options(options):
+    """Fill missing options with fiducial values."""
     options = dict(options)
     likelihoods = options.get('likelihoods', None)
     if likelihoods is not None:
@@ -472,6 +599,35 @@ def fill_fiducial_options(options):
 def generate_likelihood_options_helper(stats=('mesh2_spectrum', 'mesh3_spectrum'),
                                        tracer='LRG', zrange=(0.4, 0.6), region='GCcomb',
                                        version='abacus-2ndgen-complete', covariance='holi-v1-altmtl'):
+    """
+    Convenience helper that builds a minimal dictionary of likelihood options.
+
+    Parameters
+    ----------
+    stats : list
+        List of statistics in the joint likelihood, from ['mesh2_spectrum', 'mesh3_spectrum']
+    tracer : str, tuple
+        Tracers to fit.
+    zrange : tuple
+        Redshift range.
+    region : str
+        Sky region.
+    version : str
+        Version of data to use.
+    covariance : str
+        Version of covariance mocks to use.
+
+    Returns
+    -------
+    likelihood_options : dict
+        Dictionary with keys ['observables', 'covariance'].
+        'covariance' is a dictionary specifying how to construct the covariance matrix.
+        'observables' contains a list of dictionary (one for each observable), with keys:
+        {'stat': {'kind': ..., 'basis': ..., 'select': {...}}, 'catalog': {'version':, ...}, 'theory': {'model': ...}, 'window': {}}
+
+    """
+    if isinstance(stats, str):
+        stats = [stats]
     observables = []
     tracer, zrange = get_full_tracer_zrange(tracer)
     # FIXME
@@ -488,6 +644,20 @@ def generate_likelihood_options_helper(stats=('mesh2_spectrum', 'mesh3_spectrum'
 
 
 def get_full_tracer_zrange(tracerz=None, zrange=None):
+    """
+    Translate simple tracer labels, (e.g. LRG1),
+    to full tracer and zrange tuples ('LRG', (0.4, 0.6)).
+
+    Parameters
+    ----------
+    tracerz : str, tuple, list, None
+        If None returns the mapping table. If tracerz is a string returns
+        (tracer, zrange) or for compound tracer strings returns zipped tuples.
+
+    Returns
+    -------
+    tracer, zrange
+    """
     translate_zrange = {'BGS1': (0.1, 0.4),
                         'LRG1': (0.4, 0.6), 'LRG2': (0.6, 0.8), 'LRG3': (0.8, 1.1),
                         'ELG1': (0.8, 1.1), 'ELG2': (1.1, 1.6),
@@ -514,6 +684,7 @@ def get_full_tracer_zrange(tracerz=None, zrange=None):
 
 
 def _get_level(level: int | dict=None):
+    """Compact helper to normalise verbosity level for string helpers."""
     _default_level = {'stat': 1, 'catalog': 1, 'theory': 0, 'covariance': 0}
     if level is None: level = {}
     if not isinstance(level, dict):
@@ -523,9 +694,7 @@ def _get_level(level: int | dict=None):
 
 
 def _str_from_observable_options(options: dict, level: int=None) -> str:
-    """
-    Return string given input observable options, with ``level`` of details.
-    """
+    """Return string identifier given input observable options, with ``level`` of details."""
     level = _get_level(level)
     out_str = []
 
@@ -594,6 +763,17 @@ def _str_from_observable_options(options: dict, level: int=None) -> str:
 
 
 def str_from_likelihood_options(likelihood_options, level: int=None):
+    """
+    Return a compact string identifier for likelihood options.
+
+    Parameters
+    ----------
+    likelihood_options : dict
+        Dictionary with keys 'observables', 'covariance'.
+    level : dict
+        "Verbosity level". Default is {'stat': 1, 'catalog': 1, 'theory': 0, 'covariance': 0}.
+        Increase for more details.
+    """
     level = _get_level(level)
     out_str = []
     for options in likelihood_options['observables']:
@@ -607,17 +787,21 @@ def get_fits_fn(fits_dir=Path(os.getenv('SCRATCH', '.')) / 'fits', kind='chain',
                 sampler: dict=None, profiler: dict=None, ichain: int=None,
                 level=None, extra='', ext='npy'):
     """
-    Return measurement filename for given parameters.
+    Construct a file path for fit outputs based on likelihood and run options.
 
     Parameters
     ----------
     fits_dir : str, Path
-        Directory containing the measurements.
+        Base directory for fit outputs.
     kind : str
         Fitting product. Options are 'chain', 'profiles', etc.
+    likelihoods : list
+        Likelihood options used to build the filename.
+    ichain : int or None
+        Optional chain index appended to filename.
     extra : str, optional
-        Extra string to append to file name.
-    ext : str
+        Extra suffix to include in the path.
+    ext : str, optional
         File extension. Default is 'npy'.
 
     Returns

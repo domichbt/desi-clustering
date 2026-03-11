@@ -12,6 +12,29 @@ def run_fit_from_options(actions,
                          get_stats_fn=clustering_tools.get_stats_fn,
                          get_fits_fn=tools.get_fits_fn,
                          cache_dir:str | Path=None, **kwargs):
+    """
+    Build a likelihood from options and run fitting actions (profile / sample).
+
+    This helper constructs desi-like likelihood(s) from provided options,
+    instantiates the corresponding desilike :class:`ObservablesGaussianLikelihood`
+    and then runs fitting.
+
+    Parameters
+    ----------
+    actions : str or sequence[str]
+        One or more actions to run. Supported values: 'profile' (maximize using a
+        profiler) and 'sample' (run MCMC sampler).
+    get_stats_fn : callable, optional
+        Function used to locate/read measurement files (passed to likelihood builder).
+    get_fits_fn : callable, optional
+        Function that constructs file paths for fit outputs (used to name saved chains/profiles).
+    cache_dir : str or pathlib.Path, optional
+        Directory used for caching emulators and precomputed products.
+    **kwargs :
+        Top-level options dictionary consumed by fill_fiducial_options. Must include
+        a 'likelihoods' entry; may include sampler/profiler configuration and init/run kwargs.
+
+    """
     if isinstance(actions, str):
         actions = [actions]
     options = fill_fiducial_options(kwargs)
