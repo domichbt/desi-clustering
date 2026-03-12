@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 import scipy as sp
 import lsstypes as types
+from lsstypes.utils import get_hartlap2007_factor, get_percival2014_factor
 
 from clustering_statistics.tools import (float2str, get_full_tracer, get_simple_tracer, _make_tuple,
                                          get_simple_stats, _unzip_catalog_options, setup_logging)
@@ -280,6 +281,55 @@ def unpack_stats(stats):
         return (unpack_stats(likelihood.observable), unpack_stats(likelihood.window), likelihood.covariance)
 
 
+def _infer_effective_nparams(observables: list[dict]) -> int:
+    """Infer effective free-parameter count for covariance corrections.
+
+    Uses a fixed effective count by fit content:
+      - 7 for single-stat fits (mesh2-only or mesh3-only)
+      - 9 for joint mesh2+mesh3 fits
+    """
+    stats = {obs['stat']['kind'] for obs in observables}
+    has_mesh2 = any('mesh2_spectrum' in stat for stat in stats)
+    has_mesh3 = any('mesh3_spectrum' in stat for stat in stats)
+    return 9 if (has_mesh2 and has_mesh3) else 7
+
+
+def _get_covariance_correction_factor(covariance: types.CovarianceMatrix,
+                                      observables: list[dict],
+                                      covariance_options: dict,
+                                      default_corrections=('hartlap', 'percival')):
+    """Return multiplicative covariance correction factor and per-term metadata."""
+    corrections = covariance_options.get('corrections', default_corrections)
+    if isinstance(corrections, str):
+        corrections = [corrections]
+    corrections = [str(corr).lower() for corr in (corrections or [])]
+
+    nobs = int(covariance.attrs.get('nobs', 0))
+    nbins = int(covariance.value().shape[0])
+    factor = 1.
+    metadata = {
+        'nobs': nobs,
+        'nbins': nbins,
+        'corrections': tuple(corrections),
+    }
+
+    if 'hartlap' in corrections:
+        hartlap = get_hartlap2007_factor(nobs, nbins)
+        factor /= hartlap
+        metadata['hartlap_factor'] = float(hartlap)
+
+    if 'percival' in corrections:
+        nparams = covariance_options.get('nparams', None)
+        if nparams is None:
+            nparams = _infer_effective_nparams(observables)
+        percival = get_percival2014_factor(nobs, nbins, nparams)
+        factor *= percival
+        metadata['percival_factor'] = float(percival)
+        metadata['nparams'] = int(nparams)
+
+    return factor, metadata
+
+
 def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False,
               get_stats_fn=clustering_tools.get_stats_fn, cache_dir: str | Path=None):
     """
@@ -309,10 +359,14 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
     types.GaussianLikelihood or tuple
     """
     observables_options = observables
+    covariance_options = covariance or {}
     cache_fn = None
     if cache_dir is not None:
         cache_dir = Path(cache_dir)
-        _str_from_options = str_from_likelihood_options({'observables': observables_options, 'covariance': covariance}, level={'catalog': 100, 'select': 100})
+        _str_from_options = str_from_likelihood_options(
+            {'observables': observables_options, 'covariance': covariance_options},
+            level={'catalog': 100, 'select': 100, 'covariance': 100},
+        )
         cache_fn = cache_dir / 'prepared_stats' / f'{_str_from_options}.h5'
         if cache_fn.exists():
             logger.info(f'Reading cached stats {cache_fn}.')
@@ -396,7 +450,7 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
     # Mock-based covariance
     all_fns = []
     for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
-        file_kw = file_kw | {'imock': '*'} | covariance
+        file_kw = file_kw | {'imock': '*'} | covariance_options
         file_kw['tracer'] = get_full_tracer(file_kw['tracer'], version=file_kw['version'])
         all_fns.append(get_stats_fn(kind=stat, **file_kw))
     all_fns = list(zip(*all_fns, strict=True))  # get a list of list of file names
@@ -408,6 +462,21 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
     covariance = types.cov(mocks)
     covariance.attrs['nobs'] = len(mocks)
     covariance = covariance.at.observable.match(data)
+
+    factor, metadata = _get_covariance_correction_factor(covariance, observables_options, covariance_options)
+    if factor != 1.:
+        covariance = covariance.clone(value=covariance.value() * factor)
+    covariance.attrs['covariance_correction_factor'] = float(factor)
+    for name, value in metadata.items():
+        covariance.attrs[name] = value
+    if metadata['corrections']:
+        info = f"Applied covariance corrections {metadata['corrections']} with factor {factor:.6f}"
+        if 'hartlap_factor' in metadata:
+            info += f", hartlap={metadata['hartlap_factor']:.6f}"
+        if 'percival_factor' in metadata:
+            info += f", percival={metadata['percival_factor']:.6f}, nparams={metadata['nparams']}"
+        logger.info(info)
+
     likelihood = types.GaussianLikelihood(
         observable=data,
         window=window,
@@ -543,7 +612,7 @@ def propose_fiducial_observable_options(stat, tracer=None, zrange=None):
 
 def propose_fiducial_covariance_options():
     """Return dictionary of default covariance options."""
-    return {'version': 'holi-v1-altmtl'}
+    return {'version': 'holi-v1-altmtl', 'corrections': ['hartlap', 'percival']}
 
 
 def propose_fiducial_sampler_options(sampler=None):
@@ -773,13 +842,28 @@ def str_from_likelihood_options(likelihood_options, level: int=None):
     level : dict
         "Verbosity level". Default is {'stat': 1, 'catalog': 1, 'theory': 0, 'covariance': 0}.
         Increase for more details.
+        Covariance level behavior:
+        - > 0: include covariance version
+        - >= 3: include covariance corrections and optional nparams
     """
     level = _get_level(level)
     out_str = []
     for options in likelihood_options['observables']:
         out_str.append(_str_from_observable_options(options, level=level))
     if level['covariance'] > 0:
-        out_str.append('cov-' + likelihood_options['covariance']['version'])
+        covariance = likelihood_options.get('covariance', {}) or {}
+        covariance_str = ['cov-' + covariance.get('version', 'none')]
+        if level['covariance'] >= 3:
+            corrections = covariance.get('corrections', None)
+            if isinstance(corrections, str):
+                corrections = [corrections]
+            corrections = sorted(str(corr).lower() for corr in (corrections or []))
+            if corrections:
+                covariance_str.append('corr-' + '-'.join(corrections))
+            nparams = covariance.get('nparams', None)
+            if nparams is not None:
+                covariance_str.append(f'nparams-{int(nparams)}')
+        out_str.append('-'.join(covariance_str))
     return '+'.join(out_str)
 
 
