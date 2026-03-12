@@ -213,7 +213,7 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                             spectrum[key] = tools.apply_blinding(spectrum[key], tracers, zrange=sum(zrange.values(), start=tuple()))
                         tools.write_stats(fn, spectrum[key])
 
-        jax.experimental.multihost_utils.sync_global_devices('spectrum')  # such that spectrum ready for window
+        jax.experimental.multihost_utils.sync_global_devices('spectrum')  # wait for the writer 
 
         # Window matrix
         funcs = {'window_mesh2_spectrum': compute_window_mesh2_spectrum, 'window_mesh3_spectrum': compute_window_mesh3_spectrum}
@@ -260,6 +260,8 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                     if 'correlation' in key:  # window functions
                         fn = get_stats_fn(kind=key, catalog=fn_catalog_options, **(fn_window_options | dict(extra=extra)))
                         tools.write_stats(fn, window[key])
+
+        jax.experimental.multihost_utils.sync_global_devices('window')  # wait for the writer 
 
         # Covariance matrix
         funcs = {'covariance_mesh2_spectrum': compute_covariance_mesh2_spectrum}
