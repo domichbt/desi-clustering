@@ -476,7 +476,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
             regression_maps=propose_templates,
             templates_paths_kwargs=None,  # FIXME add
             amr_regions_zranges=list(itertools.product(propose_photoregions, propose_regression_zranges)),
-            pk_regions=["NGC", "SGC"],
+            spectrum_regions=["NGC", "SGC"],
             unitary_amplitude=True,
             n_realizations=10,
             seeds=[85, 95, 75, 65, 91, 37, 46, 87, 19, 38],

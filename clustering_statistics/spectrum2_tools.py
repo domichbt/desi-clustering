@@ -489,7 +489,7 @@ def compute_window_mesh2_spectrum_fm(
     regression_maps: list[str] | None,
     templates_paths_kwargs: dict | None,
     amr_regions_zranges: list[tuple[str, tuple[float, float]]] | None,
-    pk_regions: list[str] | None,
+    spectrum_regions: list[str] | None,
     unitary_amplitude: bool = True,
     n_realizations: int,
     seeds: list[int] | None,
@@ -530,7 +530,7 @@ def compute_window_mesh2_spectrum_fm(
         Keyword arguments to pass to the function loading the templates maps, e.g. paths to the templates files, EBV map, nside, etc. Not needed if ``amr=False``. Must at least contain the keys ``templates_path_N`` and ``templates_path_S`` with the paths to the templates files for the Northern and Southern regions, respectively.
     amr_regions_zranges : list[tuple[str, tuple[float, float]]] | None
         Regions where to apply the regressions for the AMR, and corresponding redshift ranges. Can be set to ``None`` if ``amr=False``.
-    pk_regions : list[str] | None
+    spectrum_regions : list[str] | None
         Regions for which to compute the window and power spectrum. If ``None``, the whole catalog is used as one region. Typically ``["NGC", "SGC"]``.
     n_realizations : int
         Number of realizations to compute.
@@ -560,8 +560,8 @@ def compute_window_mesh2_spectrum_fm(
     def _add_photometric_template_values(catalogs: dict[str, mpy.Catalog]):
         return {name: add_photometric_template_values(catalogs[name], regression_maps, **templates_paths_kwargs) for name in catalogs}
 
-    def _select_region(catalogs: dict[str, mpy.Catalog], pk_region: str) -> dict[str, mpy.Catalog]:
-        return {name: catalog[select_region(ra=catalog["RA"], dec=catalog["DEC"], region=pk_region)] for name, catalog in catalogs.items()}
+    def _select_region(catalogs: dict[str, mpy.Catalog], spectrum_region: str) -> dict[str, mpy.Catalog]:
+        return {name: catalog[select_region(ra=catalog["RA"], dec=catalog["DEC"], region=spectrum_region)] for name, catalog in catalogs.items()}
 
     def _split_data_randoms(catalogs: dict[str, mpy.Catalog]) -> dict[str, mpy.Catalog]:
         """Split the randoms into "data" and "randoms" based on the provided ratio. Overwrite original "data"."""
@@ -586,7 +586,7 @@ def compute_window_mesh2_spectrum_fm(
     def _safe_divide(a, b):
         return jnp.where(b != 0, a / b, 0.0)
 
-    pk_regions = pk_regions or []
+    spectrum_regions = spectrum_regions or []
     columns_optimal_weights = []
     if optimal_weights is not None:
         columns_optimal_weights += getattr(optimal_weights, "columns", [])  # to compute optimal weights, e.g. for fnl
@@ -612,13 +612,13 @@ def compute_window_mesh2_spectrum_fm(
 
             get_data_randoms = [wrap(_get_data_randoms) for _get_data_randoms in get_data_randoms]
 
-        if len(pk_regions) > 0:  # Split catalogs into pk regions, if specified
+        if len(spectrum_regions) > 0:  # Split catalogs into pk regions, if specified
 
-            def wrap(f, pk_region):
-                return lambda: _select_region(f(), pk_region)
+            def wrap(f, spectrum_region):
+                return lambda: _select_region(f(), spectrum_region)
 
             get_data_randoms = [
-                wrap(_get_data_randoms, pk_region) for pk_region in pk_regions for _get_data_randoms in get_data_randoms
+                wrap(_get_data_randoms, spectrum_region) for spectrum_region in spectrum_regions for _get_data_randoms in get_data_randoms
             ]  # [func1_region1, func2_region1, func3_region1 ... func1_region2, func2_region2, func3_region2 ...]
 
         all_particles = prepare_jaxpower_particles(
@@ -631,8 +631,8 @@ def compute_window_mesh2_spectrum_fm(
         all_data = [particles["data"] for particles in all_particles]
         del all_particles
 
-        # Make into len(pk_regions) catalogs if split into pk regions, otherwise one catalog
-        nregion = len(pk_regions) if len(pk_regions) > 0 else 1
+        # Make into len(spectrum_regions) catalogs if split into spectrum regions, otherwise one catalog
+        nregion = len(spectrum_regions) if len(spectrum_regions) > 0 else 1
         nrandoms = len(all_randoms)
         chunk_size = nrandoms // nregion
         all_randoms = [ParticleField.concatenate(all_randoms[chunk_size * i : chunk_size * (i + 1)]) for i in range(nregion)]
@@ -708,7 +708,7 @@ def compute_window_mesh2_spectrum_fm(
                 "mock_survey_args": (*fkp_fields,),
                 "static_argnames": ["los", "unitary_amplitude", "estimator_weights"],
                 "tmpdir": None,  # No temporary output
-                "survey_names": pk_regions,
+                "survey_names": spectrum_regions,
             }
             mock_survey_kwargs = {
                 "los": los,
@@ -815,7 +815,7 @@ def compute_window_mesh2_spectrum_fm(
                     "mock_survey_args": [(fkp,) * 2 for fkp in fkp_fields],  # same FKP field but with different weights
                     "static_argnames": ["los", "unitary_amplitude", "estimator_weights"],
                     "tmpdir": None,  # No temporary output
-                    "survey_names": pk_regions,
+                    "survey_names": spectrum_regions,
                 }
                 mock_survey_kwargs = {
                     "los": los,
@@ -860,13 +860,13 @@ def compute_window_mesh2_spectrum_fm(
 
             if geo:
                 windows["geometry"] = {
-                    pk_region: [_combine_ells([windows["geometry"][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
-                    for idx, pk_region in enumerate(pk_regions)
+                    spectrum_region: [_combine_ells([windows["geometry"][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
+                    for idx, spectrum_region in enumerate(spectrum_regions)
                 }
 
             windows[extra_effects] = {
-                pk_region: [_combine_ells([windows[extra_effects][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
-                for idx, pk_region in enumerate(pk_regions)
+                spectrum_region: [_combine_ells([windows[extra_effects][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
+                for idx, spectrum_region in enumerate(spectrum_regions)
             }
 
             return windows

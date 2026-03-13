@@ -301,9 +301,9 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                 theory_fn = window_options.pop("theory", None)
 
                 if theory_fn is None:
-                    products_fn = {pk_region: {} for pk_region in window_options["pk_regions"]}
+                    products_fn = {spectrum_region: {} for spectrum_region in window_options["spectrum_regions"]}
                     # Collect power spectrum and window, for each region if relevant
-                    for pk_region in window_options["pk_regions"]:
+                    for spectrum_region in window_options["spectrum_regions"]:
                         for name in ["spectrum", "window"]:
                             kind_stat = (
                                 stat.replace("window_", "").replace("_fm", "") if name == "spectrum" else stat.replace("window_", f"{name}_").replace("_fm", "")
@@ -314,12 +314,12 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                                 fn = get_stats_fn(
                                     kind=kind_stat,
                                     catalog=fn_catalog_options[tracers[0]],
-                                    **kw | {"region": pk_region},
+                                    **kw | {"region": spectrum_region},
                                 )
-                            products_fn[pk_region][name] = fn
+                            products_fn[spectrum_region][name] = fn
 
-                    spectra = [types.read(products_fn[pk_region]["spectrum"]) for pk_region in window_options["pk_regions"]]
-                    windows = [types.read(products_fn[pk_region]["window"]) for pk_region in window_options["pk_regions"]]
+                    spectra = [types.read(products_fn[spectrum_region]["spectrum"]) for spectrum_region in window_options["spectrum_regions"]]
+                    windows = [types.read(products_fn[spectrum_region]["window"]) for spectrum_region in window_options["spectrum_regions"]]
                     theory = types.sum(
                         [run_preliminary_fit_mesh2_spectrum(data=spectrum, window=window) for spectrum, window in zip(spectra, windows, strict=True)]
                     )
@@ -339,27 +339,27 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                 if spectrum_fn is None:
                     spectrum_fn = {}
                     spectrum_stat = stat.replace("window_", "").replace("_fm", "")
-                    for pk_region in window_options["pk_regions"]:
+                    for spectrum_region in window_options["spectrum_regions"]:
                         fn_window_options = options[spectrum_stat] | fn_window_options
-                        spectrum_fn[pk_region] = get_stats_fn(
+                        spectrum_fn[spectrum_region] = get_stats_fn(
                             kind=spectrum_stat,
                             catalog=fn_catalog_options,
-                            **(options[spectrum_stat] | {"auw": False, "cut": False} | {"region": pk_region}),
+                            **(options[spectrum_stat] | {"auw": False, "cut": False} | {"region": spectrum_region}),
                         )
-                    spectrum = types.sum([types.read(spectrum_fn[pk_region]) for pk_region in window_options["pk_regions"]])
+                    spectrum = types.sum([types.read(spectrum_fn[spectrum_region]) for spectrum_region in window_options["spectrum_regions"]])
                 else:
                     spectrum = types.read(spectrum_fn)
 
                 # Now compute window function using forward model
                 window = func(*[functools.partial(get_data, tracer) for tracer in tracers], spectrum=spectrum, theory=theory, **window_options)
-                # This is a dict of dict of lists of windows : {modeled_effect:{pk_region:[window, ...], ...}, ...}
+                # This is a dict of dict of lists of windows : {modeled_effect:{spectrum_region:[window, ...], ...}, ...}
                 for effect in window:  # geo, RIC or RIC+AMR
-                    for pk_region in window[effect]:  # eg NGC, SGC
+                    for spectrum_region in window[effect]:  # eg NGC, SGC
                         for i, seed in enumerate(window_options["seeds"]):
                             fn = get_stats_fn(
-                                kind=stat, catalog=fn_catalog_options, **(fn_window_options | {"extra": f"{effect}_seed={seed}", "region": pk_region})
+                                kind=stat, catalog=fn_catalog_options, **(fn_window_options | {"extra": f"{effect}_seed={seed}", "region": spectrum_region})
                             )
-                            tools.write_stats(fn, window[effect][pk_region][i])
+                            tools.write_stats(fn, window[effect][spectrum_region][i])
 
         # Covariance matrix
         funcs = {'covariance_mesh2_spectrum': compute_covariance_mesh2_spectrum}
