@@ -897,5 +897,5 @@ def get_fits_fn(fits_dir=Path(os.getenv('SCRATCH', '.')) / 'fits', kind='chain',
     _str_from_options = [str_from_likelihood_options(likelihood_options, level=level) for likelihood_options in likelihoods]
     _str_from_options = '_'.join(_str_from_options)
     extra = f'_{extra}' if extra else ''
-    ichain = '_{ichain:d}' if ichain is not None else ''
+    ichain = f'_{ichain:d}' if ichain is not None else ''
     return fits_dir / f'{_str_from_options}{extra}' / f'{kind}{ichain}.{ext}'
