@@ -42,7 +42,9 @@ def run_fit_from_options(actions,
     likelihood = get_likelihood(likelihoods_options, get_stats_fn=get_stats_fn, cache_dir=cache_dir)
     likelihood()
     for action in actions:
-        if action == 'sample':
+        if action == 'build':
+            pass  # likelihood already built and cached above
+        elif action == 'sample':
             from desilike.samplers import EmceeSampler
             Samplers = {'emcee': EmceeSampler}
             sampler_options = dict(options['sampler'])
@@ -50,8 +52,8 @@ def run_fit_from_options(actions,
             cls = Samplers[cls]
             save_fn = [get_fits_fn(kind='chain', likelihoods=likelihoods_options, ichain=ichain)\
                        for ichain in range(sampler_options['nchains'])]
-            sampler = cls(likelihood, **options['init'], save_fn=save_fn)
-            sampler.run(**options['run'])
+            sampler = cls(likelihood, **sampler_options['init'], save_fn=save_fn)
+            sampler.run(**sampler_options['run'])
         elif action == 'profile':
             from desilike.profilers import MinuitProfiler
             Profilers = {'minuit': MinuitProfiler}
@@ -75,8 +77,8 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--actions', type=str, default='profile',
-        choices=['profile', 'sample'], nargs='*',
-        help='Run best fit (maximize) and / or sample.',
+        choices=['build', 'profile', 'sample'], nargs='*',
+        help='Run best fit (maximize) and / or sample. Use "build" to pre-warm caches without running inference.',
     )
     parser.add_argument(
         '--stats', type=str, nargs='*', default=['mesh2_spectrum'],
@@ -99,7 +101,7 @@ if __name__ == '__main__':
         '--covariance', type=str, default='holi-v1-altmtl',
         help='Covariance mock set (default: holi-v1-altmtl).',
     )
-    fits_dir = Path(os.getenv('SCRATCH')) / 'fits'
+    fits_dir = Path(os.getenv('SCRATCH', '.')) / 'fits'
     parser.add_argument(
         '--fits_dir', type=str, default=fits_dir,
         help=f'base directory for fits, default is {fits_dir}'

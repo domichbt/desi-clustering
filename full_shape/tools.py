@@ -18,6 +18,8 @@ observable (data, theory, window): ``{'stat': {'kind': ..., 'basis': ..., 'selec
 
 
 import os
+import json
+import hashlib
 import logging
 from pathlib import Path
 
@@ -198,7 +200,7 @@ def get_theory(stat: str, theory: dict, z: float, cosmo, fiducial):
         if theory_options['model'] == 'reptvelocileptors':
             theory = REPTVelocileptorsTracerPowerSpectrumMultipoles(template=template, **theory_options.get('options', {}))
         elif theory_options['model'] in ['folpsD', 'folpsEFT']:
-            kw = {name: theory_options[name] for name in ['damping', 'prior_basis', 'b3_coev']}
+            kw = {name: theory_options[name] for name in ['damping', 'prior_basis', 'b3_coev', 'A_full']}
             theory = FOLPSv2TracerPowerSpectrumMultipoles(template=template, **kw, **theory_options.get('options', {}))
             sigma8_fid = fiducial.get_fourier().sigma8_z(of='delta_cb', z=z)
             params = _get_default_theory_nuisance_priors(theory_options['model'], stat, prior_basis=kw['prior_basis'], b3_coev=kw['b3_coev'], sigma8_fid=sigma8_fid)
@@ -363,11 +365,10 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
     cache_fn = None
     if cache_dir is not None:
         cache_dir = Path(cache_dir)
-        _str_from_options = str_from_likelihood_options(
-            {'observables': observables_options, 'covariance': covariance_options},
-            level={'catalog': 100, 'select': 100, 'covariance': 100},
-        )
-        cache_fn = cache_dir / 'prepared_stats' / f'{_str_from_options}.h5'
+        _full_config = {'observables': observables_options, 'covariance': covariance_options}
+        _str_from_options = str_from_likelihood_options(_full_config, level={'catalog': 2, 'covariance': 1})
+        _hash = _config_hash(_full_config)
+        cache_fn = cache_dir / 'prepared_stats' / f'{_str_from_options}-{_hash}.h5'
         if cache_fn.exists():
             logger.info(f'Reading cached stats {cache_fn}.')
             likelihood = types.read(cache_fn)
@@ -534,6 +535,10 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
         for label, pole in window.observable.items(level=None):
             z = pole.attrs['zeff']
         theory = get_theory(stat, theory=observable_options['theory'], z=z, cosmo=cosmo, fiducial=fiducial)
+        namespace = _str_from_observable_options(
+            observable_options, level={'catalog': 1, 'stat': 0, 'theory': 0, 'covariance': 0})
+        for param in theory.init.params:
+            param.update(namespace=namespace)
         theory_params = theory.init.params
         observable = cls(data=data, window=window, theory=theory)
         observable()
@@ -601,8 +606,8 @@ def propose_fiducial_observable_options(stat, tracer=None, zrange=None):
     propose_stat = {'mesh2_spectrum': {'select': {0: [0.02, 0.2, 0.005], 2: [0.02, 0.2, 0.005]}},
                       'mesh3_spectrum': {'select': {(0, 0, 0): [0.02, 0.12, 0.005], (2, 0, 2): [0.02, 0.08, 0.005]},
                                          'basis': 'sugiyama-diagonal'}}
-    propose_theory = {'mesh2_spectrum': {'b3_coev': True},
-                      'mesh3_spectrum': {}}
+    propose_theory = {'mesh2_spectrum': {'b3_coev': True, 'A_full': False},
+                      'mesh3_spectrum': {'A_full': False}}
     for _stat in propose_stat:
         if _stat in stat:
             propose_fiducial['stat'].update(propose_stat[_stat])
@@ -619,7 +624,7 @@ def propose_fiducial_sampler_options(sampler=None):
     """Return dictionary of default sampler configuration."""
     if sampler is None:
         sampler = 'emcee'
-    fiducial_options = {'sampler': sampler, 'init': {},' run': {}, 'nchains': 4}
+    fiducial_options = {'sampler': sampler, 'init': {}, 'run': {'check': {'max_eigen_gr': 0.03}}, 'nchains': 1}
     return fiducial_options
 
 
@@ -762,6 +767,20 @@ def _get_level(level: int | dict=None):
     return level
 
 
+def _config_hash(config, length=8):
+    """Return a short SHA-256 hash of a canonicalized config dict."""
+    def _canonical(obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, dict):
+            return sorted((_canonical(k), _canonical(v)) for k, v in obj.items())
+        if isinstance(obj, (list, tuple)):
+            return [_canonical(x) for x in obj]
+        return obj
+    s = json.dumps(_canonical(config), sort_keys=True)
+    return hashlib.sha256(s.encode()).hexdigest()[:length]
+
+
 def _str_from_observable_options(options: dict, level: int=None) -> str:
     """Return string identifier given input observable options, with ``level`` of details."""
     level = _get_level(level)
@@ -896,6 +915,7 @@ def get_fits_fn(fits_dir=Path(os.getenv('SCRATCH', '.')) / 'fits', kind='chain',
     fits_dir = Path(fits_dir)
     _str_from_options = [str_from_likelihood_options(likelihood_options, level=level) for likelihood_options in likelihoods]
     _str_from_options = '_'.join(_str_from_options)
+    _hash = _config_hash(likelihoods)
     extra = f'_{extra}' if extra else ''
-    ichain = '_{ichain:d}' if ichain is not None else ''
-    return fits_dir / f'{_str_from_options}{extra}' / f'{kind}{ichain}.{ext}'
+    ichain = f'_{ichain:d}' if ichain is not None else ''
+    return fits_dir / f'{_str_from_options}-{_hash}{extra}' / f'{kind}{ichain}.{ext}'
