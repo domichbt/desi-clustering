@@ -480,10 +480,10 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     for stat in ['mesh2_spectrum', 'mesh3_spectrum']:
         propose_fiducial[stat]['mattrs'] = {'meshsize': propose_meshsizes[simple_tracers[0]], 'cellsize': propose_cellsize}
     if 'png' in analysis:
-        propose_fiducial['mesh2_spectrum'].update(ells=(0, 2), optimal_weights=functools.partial(compute_fiducial_png_weights, tracer=tracers, p=[propose_p[tt] for tt in simple_tracers]))
+        propose_fiducial['mesh2_spectrum'].update(norm={'cellsize': 10.}, ells=(0, 2), optimal_weights=functools.partial(compute_fiducial_png_weights, tracer=tracers, p=[propose_p[tt] for tt in simple_tracers]))
     else:
-        propose_fiducial['mesh2_spectrum'].update(ells=(0, 2, 4))
-        propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal', selection_weights={tracer: functools.partial(compute_fiducial_selection_weights, tracer=tracer) for tracer in tracers})
+        propose_fiducial['mesh2_spectrum'].update(norm={'cellsize': 10.}, ells=(0, 2, 4))
+        propose_fiducial['mesh3_spectrum'].update(norm={'cellsize': 10.}, ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal', selection_weights={tracer: functools.partial(compute_fiducial_selection_weights, tracer=tracer) for tracer in tracers})
     if 'protected' in analysis:
         propose_fiducial['mesh2_spectrum'].update(ells=(0,), edges={'min': 0.02, 'step': 0.001})
         propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0)])
@@ -501,21 +501,22 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     propose_fiducial['window_mesh3_spectrum']['buffer_size'] = {'BGS': 3, 'LRG': 3, 'ELG': 0, 'LRG+ELG': 3, 'QSO': 0}[simple_tracers[0]]
     propose_fiducial['rotation_mesh2_spectrum'] = {'select': {'k': slice(0, None, 5)}}
     if "window_mesh2_spectrum_fm" in kind:
-        if simple_tracer not in ["BGS", "LRG", "ELG", "QSO"]:
+        # FIXME: for cross-correlations
+        if simple_tracers[0] not in ["BGS", "LRG", "ELG", "QSO"]:
             raise ValueError(f"tracer {tracer} is not supported for window_mesh2_spectrum_fm")
-        propose_photoregions = {"BGS": ["N", "S"], "LRG": ["N", "S"], "ELG": ["N", "S"], "QSO": ["N", "SnoDES", "DES"]}[simple_tracer]
+        propose_photoregions = {"BGS": ["N", "S"], "LRG": ["N", "S"], "ELG": ["N", "S"], "QSO": ["N", "SnoDES", "DES"]}[simple_tracers[0]]
         propose_regression_zranges = {
             "BGS": [(0.1, 0.4)],
             "LRG": [(0.4, 0.5), (0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.0), (1.0, 1.1)],
             "ELG": [(0.8, 1.1), (1.1, 1.6)],
             "QSO": [(0.8, 1.3), (1.3, 2.1), (2.1, 3.5)],
-        }[simple_tracer]
+        }[simple_tracers[0]]
         propose_templates = {
             "BGS": ['STARDENS', 'GALDEPTH_R', 'HI', 'EBV_DIFF_GR', 'EBV_DIFF_RZ'],
             "LRG": ['STARDENS', 'PSFSIZE_G', 'PSFSIZE_R', 'PSFSIZE_Z', 'GALDEPTH_G', 'GALDEPTH_R', 'GALDEPTH_Z', 'HI', 'PSFDEPTH_W1', 'EBV_DIFF_GR', 'EBV_DIFF_RZ'],
             "ELG": ['STARDENS', 'PSFSIZE_G', 'PSFSIZE_R', 'PSFSIZE_Z', 'GALDEPTH_G', 'GALDEPTH_R', 'GALDEPTH_Z', 'EBV_DIFF_GR', 'EBV_DIFF_RZ', 'HI'],
             "QSO": ['PSFDEPTH_W1', 'PSFDEPTH_W2', 'STARDENS', 'PSFSIZE_G', 'PSFSIZE_R', 'PSFSIZE_Z', 'PSFDEPTH_G', 'PSFDEPTH_R', 'PSFDEPTH_Z', 'EBV_DIFF_GR', 'EBV_DIFF_RZ', 'HI'],
-            }[simple_tracer]  # fmt: skip
+            }[simple_tracers[0]]  # fmt: skip
         templates_dir = Path("/dvs_ro/cfs/cdirs/desi/survey/catalogs/Y3/LSS/loa-v1/LSScats/v2/hpmaps/")
         translate_template_tracer = {'BGS': 'BGS_BRIGHT', 'ELG_LOPnotqso': 'ELG_LOPnotqso', 'ELG': 'ELG', 'LRG': 'LRG', 'QSO': 'QSO'}
         for tt, template_tracer in translate_template_tracer.items():
@@ -685,6 +686,7 @@ def fill_fiducial_options(kwargs, analysis='full_shape'):
             spectrum_options = {key: value for key, value in spectrum_options.items() if key in ['selection_weights', 'optimal_weights', 'basis']}
             fiducial_options = propose_fiducial(stat, tracer=tracers, analysis=analysis)
             options[stat] = fiducial_options | spectrum_options | options.get(stat, {})
+        options['window_mesh2_spectrum'].setdefault('zeff', options['mesh2_spectrum'].get('norm', {}))
         for stat in ['covariance_mesh2_spectrum']:
             spectrum_options = options[stat.replace('covariance_', '')]
             spectrum_options = {key: value for key, value in spectrum_options.items() if key in ['mattrs']}

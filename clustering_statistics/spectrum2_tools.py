@@ -99,7 +99,7 @@ def _get_jaxpower_attrs(*all_particles):
 
 def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
                            ells=(0, 2, 4), edges=None, los='firstpoint', optimal_weights=None,
-                           cache=None):
+                           norm: dict=None, cache=None):
     r"""
     Compute the 2-point spectrum multipoles using mesh-based FKP fields with :mod:`jaxpower`.
 
@@ -130,6 +130,9 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
         As a default, ``optimal_weights.columns = ['Z']`` to indicate that redshift information is needed.
         A dictionary ``catalog`` of columns is provided, containing 'INDWEIGHT' and the requested columns.
         If ``None``, no optimal weights are applied.
+    norm : dict, optional
+        Optional arguments for computing normalization.
+        Default is ``{'cellsize': 10.}`` (density computed with ``cellsize = 10.``)
     cache : dict, optional
         Cache to store binning class (can be reused if ``meshsize`` and ``boxsize`` are the same).
         If ``None``, a new cache is created.
@@ -152,6 +155,8 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
 
         if cache is None: cache = {}
         if edges is None: edges = {'step': 0.001}
+        if norm is None: norm = {'cellsize': 10.}
+        kw_norm = dict(norm)
 
         def _compute_spectrum_ell(all_particles, ells, fields=None):
             # Compute power spectrum for input given multipoles
@@ -168,7 +173,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
 
             # Computing normalization
             all_fkp = [FKPField(particles['data'], particles['randoms']) for particles in all_particles]
-            norm = compute_fkp2_normalization(*all_fkp, bin=bin, cellsize=10)
+            norm = compute_fkp2_normalization(*all_fkp, bin=bin, **kw_norm)
 
             # Computing shot noise
             all_fkp = [FKPField(particles['data'], particles['shifted'] if particles.get('shifted', None) is not None else particles['randoms']) for particles in all_particles]
@@ -289,7 +294,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
 
 
 def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2SpectrumPoles, optimal_weights: Callable=None, cut
-: bool=None):
+: bool=None, zeff: dict=None):
     r"""
     Compute the 2-point spectrum window with :mod:`jaxpower`.
 
@@ -306,6 +311,9 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
         As a default, ``optimal_weights.columns = ['Z']`` to indicate that redshift information is needed.
         A dictionary ``catalog`` of columns is provided, containing 'INDWEIGHT' and the requested columns.
         If ``None``, no optimal weights are applied.
+    zeff : dict, optional
+        Optional arguments for computing effective redshift.
+        Default is ``{'cellsize': 10.}`` (density computed with ``cellsize = 10.``)
 
     Returns
     -------
@@ -321,6 +329,8 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
     los = spectrum.attrs['los']
     ellsin = [0, 2, 4]
     kw_paint = dict(resampler='tsc', interlacing=3, compensate=True)
+    if zeff is None: zeff = {'cellsize': 10.}
+    kw_zeff = dict(zeff)
 
     columns_optimal_weights = []
     if optimal_weights is not None:
@@ -412,7 +422,7 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
             # Compute effective redshift
             fields = None
             seed = [(42, randoms.extra["IDS"]) for randoms in all_randoms]
-            zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True)
+            zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True, **kw_zeff)
             results = _compute_window_ell(all_randoms, ells=ells, fields=fields)
             for key in results:
                 if 'correlation' not in key:
@@ -421,6 +431,7 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                     results[key] = results[key].clone(observable=observable)
         else:
             results = {}
+            # Loop over multipoles
             for ell in ells:
                 if jax.process_index() == 0:
                     logger.info(f'Applying optimal weights for ell = {ell:d}')
@@ -438,20 +449,15 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                         toret = particles.clone(weights=weights)
                         return toret
 
-                    for all_weights in optimal_weights(
-                        ell,
-                        [
-                            {"INDWEIGHT": particles.weights} | {column: particles.extra[column] for column in columns_optimal_weights}
-                            for particles in all_particles
-                        ],
-                    ):
+                    for all_weights in optimal_weights(ell, [{"INDWEIGHT": particles.weights} | {column: particles.extra[column] for column in columns_optimal_weights} for particles in all_particles]):
                         yield tuple(clone(particles, weights=weights) for particles, weights in zip(all_particles, all_weights))
 
                 result_ell = {}
                 for isum, all_randoms in enumerate(_get_optimal_weights(all_randoms)):
+                    # Loop over weight combinations for the same multipole
                     fields = None
                     seed = [(42, randoms.extra["IDS"]) for randoms in all_randoms]
-                    zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True)
+                    zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True, **kw_zeff)
                     _result = _compute_window_ell(all_randoms, ells=[ell], isum=isum, fields=fields)
                     for key in _result:  # raw, cut, auw
                         if 'correlation' not in key:
@@ -462,11 +468,12 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                         result_ell[key].append(_result[key])
                 for key, windows in result_ell.items():
                     results.setdefault(key, [])
+                    # windows can be WindowMatrix and ObservableTree (window correlation)
                     window = combine_stats(windows)  # sum 1<->2
                     # Used power spectrum norm is for the sum of the two;
                     # just sum the two components
                     window = window.clone(value=sum(window.value() for window in windows))
-                    results[key].append(combine_stats(windows))
+                    results[key].append(window)
             for key in results:
                 if 'correlation' in key:
                     results[key] = types.join(results[key])

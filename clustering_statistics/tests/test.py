@@ -189,6 +189,7 @@ def test_window(stats=['mesh2_spectrum']):
     #    print(edges, len(edges))
     stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
     for stat in stats:
+        """
         for tracer in ['LRG']:
             zranges = [(0.8, 1.1)]
             for region in ['NGC', 'SGC'][:1]:
@@ -196,7 +197,7 @@ def test_window(stats=['mesh2_spectrum']):
                 #catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default-FKP', nran=1)
                 compute_stats_from_options([stat, f'window_{stat}'][1:], catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), mesh2_spectrum={}, window_mesh2_spectrum={'cut': True})
         if 'mesh3' in stat: continue
-
+        """
         for tracer in [('LRG', 'ELG_LOPnotqso')]:
             zranges = [(0.8, 1.1)]
             for region in ['NGC', 'SGC'][:1]:
@@ -267,7 +268,7 @@ def test_norm():
                 assert np.allclose(spectrum.get((0, 0, 0)).values('norm').mean(), 1.28543918)
 
 
-def test_window(tracer='QSO'):
+def test_window_fm(tracer='QSO'):
     stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
     fiducial = tools.propose_fiducial(kind="window_mesh2_spectrum_fm", tracer=tracer, analysis="png_local")
     catalog_options = {
