@@ -41,25 +41,21 @@ def run_fit_from_options(actions,
     likelihoods_options = options['likelihoods']
     likelihood = get_likelihood(likelihoods_options, get_stats_fn=get_stats_fn, cache_dir=cache_dir)
     likelihood()
+    fn = get_fits_fn(kind='config', likelihoods=likelihoods_options, ext='yaml')
+    tools.write_options(fn, options)
     for action in actions:
         if action == 'build':
             pass  # likelihood already built and cached above
         elif action == 'sample':
-            from desilike.samplers import EmceeSampler
-            Samplers = {'emcee': EmceeSampler}
             sampler_options = dict(options['sampler'])
-            cls = sampler_options.pop('sampler', 'emcee')
-            cls = Samplers[cls]
+            cls = tools.get_sampler_cls(sampler_options.pop('sampler', 'emcee'))
             save_fn = [get_fits_fn(kind='chain', likelihoods=likelihoods_options, ichain=ichain)\
                        for ichain in range(sampler_options['nchains'])]
             sampler = cls(likelihood, **sampler_options['init'], save_fn=save_fn)
             sampler.run(**sampler_options['run'])
         elif action == 'profile':
-            from desilike.profilers import MinuitProfiler
-            Profilers = {'minuit': MinuitProfiler}
             profiler_options = dict(options['profiler'])
-            cls = profiler_options.pop('profiler', 'minuit')
-            cls = Profilers[cls]
+            cls = tools.get_profiler_cls(profiler_options.pop('profiler', 'minuit'))
             save_fn = get_fits_fn(kind='profiles', likelihoods=likelihoods_options)
             profiler = cls(likelihood, **profiler_options['init'], save_fn=save_fn)
             profiler.maximize(**profiler_options['maximize'])
@@ -67,6 +63,7 @@ def run_fit_from_options(actions,
                 print(profiler.profiles.to_stats(tablefmt='pretty'))
         else:
             raise NotImplementedError(f'{action} not implemented')
+        
 
 
 

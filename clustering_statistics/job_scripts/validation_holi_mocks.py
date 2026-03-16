@@ -1,6 +1,5 @@
 """
 Script to create and spawn desipipe tasks to compute clustering measurements on HOLI mocks.
-To create and spawn the tasks on NERSC, use the following commands:
 ```bash
 source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
 srun -n 4 validation_holi_mocks.py

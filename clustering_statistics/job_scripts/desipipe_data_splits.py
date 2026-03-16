@@ -2,7 +2,7 @@
 salloc -N 1 -C "gpu&hbm80g" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
 source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
 or source /global/homes/s/shengyu/env.sh 2pt_env
-srun -n 4 python job_scripts/desipipe_data_splits.py
+python job_scripts/desipipe_data_splits.py
 desipipe tasks -q data_splits  # check the list of tasks
 desipipe spawn -q data_splits --spawn  # spawn the jobs
 desipipe queues -q data_splits  # check the queue
@@ -62,6 +62,7 @@ def run_stats(version='data-dr2-v2', tracer='LRG', regions=['NGC','SGC'], weight
         options = fill_fiducial_options(options)
         compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
 
+
 def postprocess_stats(version='data-dr2-v2', tracer='LRG', regions= ['GCcomb'], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', postprocess=['combine_regions'], **kwargs):
     from clustering_statistics import postprocess_stats_from_options
     zranges = tools.propose_fiducial('zranges', tracer)
@@ -69,6 +70,7 @@ def postprocess_stats(version='data-dr2-v2', tracer='LRG', regions= ['GCcomb'], 
         get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
         options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight_type=weight_type), combine_regions={'stats': ['mesh2_spectrum', 'mesh3_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum', 'window_mesh3_spectrum']}, mesh2_spectrum={'cut': True}, window_mesh2_spectrum={'cut': True})
         postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **options)
+
 
 ########################################################################################################################################################################################
 if __name__ == '__main__':
@@ -81,7 +83,7 @@ if __name__ == '__main__':
     parser.add_argument('--versions', nargs='+', type=str,  default=['data-dr2-v2'], choices=['data-dr2-v2'], help='Catalog versions to use.')
     parser.add_argument('--weight_types', nargs='+', type=str, default=['default_fkp'],
                         choices=['default', 'default_fkp', 'default_thetacut', 'default_auw', 'bitwise', 'bitwise_auw'], help='Weighting schemes to use.')
-    parser.add_argument('--todo', nargs='+', type=str, default=['blinded_mesh2_spectrum'],
+    parser.add_argument('--todo', nargs='+', type=str, default=['mesh2_spectrum'],
                         choices=['auw', 'mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum', 'count2_correlation', 'blinded_mesh2_spectrum'], help='Which processing steps to run.')
     args = parser.parse_args()
 

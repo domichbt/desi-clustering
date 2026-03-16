@@ -12,21 +12,23 @@ Dictionary of options are organized as follows:
 - list of dictionaries, one for each independent (summed) likelihood;
 - each of this dictionary is {'observables': [observable1, observable2, ...], 'covariance': covariance options}
 - each of observable1, observable2, ... is a dictionary that specifies how to build the desilike
-observable (data, theory, window): ``{'stat': {'kind': ..., 'basis': ..., 'select': {...}},
+observable (data, theory, window): ``{'stat': {'kind': ..., 'basis': ..., 'select': [...]},
 'catalog': {'version':, ...}, 'theory': {'model': ...}, 'window': {}}``.
 """
 
 
 import os
+import re
 import json
 import hashlib
 import logging
+import numbers
 from pathlib import Path
 
 import numpy as np
 import scipy as sp
 import lsstypes as types
-from lsstypes.utils import get_hartlap2007_factor, get_percival2014_factor
+from lsstypes.utils import get_hartlap2007_factor, get_percival2014_factor, mkdir
 
 from clustering_statistics.tools import (float2str, get_full_tracer, get_simple_tracer, _make_tuple,
                                          get_simple_stats, _unzip_catalog_options, setup_logging)
@@ -367,7 +369,7 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
         cache_dir = Path(cache_dir)
         _full_config = {'observables': observables_options, 'covariance': covariance_options}
         _str_from_options = str_from_likelihood_options(_full_config, level={'catalog': 2, 'covariance': 1})
-        _hash = _config_hash(_full_config)
+        _hash = _hash_options(_full_config)
         cache_fn = cache_dir / 'prepared_stats' / f'{_str_from_options}-{_hash}.h5'
         if cache_fn.exists():
             logger.info(f'Reading cached stats {cache_fn}.')
@@ -402,7 +404,7 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
             file_kw = kw | observable_options['catalog'] | {'tracer': full_tracer} | kwargs
             yield stat, labels, file_kw, dict(observable_options)
 
-    def _apply_select(observable: types.ObservableTree, select: dict=None):
+    def _apply_select(observable: types.ObservableTree, select: list=None):
         """
         Apply a selection (k-range, ell selection) to an observable.
 
@@ -411,16 +413,28 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
         """
         if select is None:
             return observable
-        for ell, limit in select.items():
-            pole = observable.get(ells=ell)
-            coord_name = list(pole.coords())[0]
-            if len(limit) == 3:
-                step = limit[2]
-                edge = pole.edges(coord_name)[0]
-                rebin = int(np.rint(np.mean(step / (edge[..., 1] - edge[..., 0]))) + 0.5)
-                observable = observable.at(ells=ell).select(**{coord_name: slice(0, None, rebin)})
-            observable = observable.at(ells=ell).select(**{coord_name: tuple(limit[:2])})
-        observable = observable.get(ells=list(select))
+        if callable(select):  # custom rebinning
+            return select(observable)
+        labels = []
+        for _select in select:
+            _select = dict(_select)
+            keys = observable.labels(return_type='keys')
+            label = {}
+            for key in keys:
+                if key in _select:
+                    label[key] = _select.pop(key)
+            labels.append(label)
+            pole = observable.get(**label)
+            for coord_name, limits in _select.items():
+                if len(limits) == 3:
+                    step = limits[2]
+                    edge = pole.edges(coord_name)[0]
+                    rebin = int(np.rint(np.mean(step / (edge[..., 1] - edge[..., 0]))) + 0.5)
+                    pole = pole.select(**{coord_name: slice(0, None, rebin)})
+                pole = pole.select(**{coord_name: tuple(limits[:2])})
+            observable = observable.at(**label).replace(pole)
+        # FIXME
+        observable = observable.get(ells=[label['ells'] for label in labels])
         return observable
 
     # Loading data, window
@@ -452,7 +466,7 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
     all_fns = []
     for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
         file_kw = file_kw | {'imock': '*'} | covariance_options
-        file_kw['tracer'] = get_full_tracer(file_kw['tracer'], version=file_kw['version'])
+        file_kw['tracer'] = get_full_tracer(get_simple_tracer(file_kw['tracer']), version=file_kw['version'])
         all_fns.append(get_stats_fn(kind=stat, **file_kw))
     all_fns = list(zip(*all_fns, strict=True))  # get a list of list of file names
     mocks = []
@@ -596,6 +610,20 @@ def get_likelihood(likelihoods_options: dict | list[dict], cosmo=None, fiducial=
     return SumLikelihood(likelihoods)
 
 
+def get_sampler_cls(name):
+    """Return sampler class."""
+    from desilike.samplers import EmceeSampler
+    translate = {'emcee': EmceeSampler}
+    return translate[name.lower()]
+
+
+def get_profiler_cls(name):
+    """Return profiler class."""
+    from desilike.profilers import MinuitProfiler
+    translate = {'minuit': MinuitProfiler}
+    return translate[name.lower()]
+    
+
 def propose_fiducial_observable_options(stat, tracer=None, zrange=None):
     """Propose fiducial fitting options for given statistics and tracer."""
     propose_fiducial = {'stat': {'kind': stat},
@@ -603,9 +631,9 @@ def propose_fiducial_observable_options(stat, tracer=None, zrange=None):
                         'theory': {'model': 'folpsD', 'prior_basis': 'physical_aap', 'damping': 'lor', 'marg': True},
                         'emulator': {},
                         'window': {}}
-    propose_stat = {'mesh2_spectrum': {'select': {0: [0.02, 0.2, 0.005], 2: [0.02, 0.2, 0.005]}},
-                      'mesh3_spectrum': {'select': {(0, 0, 0): [0.02, 0.12, 0.005], (2, 0, 2): [0.02, 0.08, 0.005]},
-                                         'basis': 'sugiyama-diagonal'}}
+    propose_stat = {'mesh2_spectrum': {'select': [{'ells': ell, 'k': [0.02, 0.2, 0.005]} for ell in [0, 2]]},
+                    'mesh3_spectrum': {'select': [{'ells': (0, 0, 0), 'k': [0.02, 0.12, 0.005]}, {'ells': (2, 0, 2), 'k': [0.02, 0.08, 0.005]}],
+                                        'basis': 'sugiyama-diagonal'}}
     propose_theory = {'mesh2_spectrum': {'b3_coev': True, 'A_full': False},
                       'mesh3_spectrum': {'A_full': False}}
     for _stat in propose_stat:
@@ -697,7 +725,7 @@ def generate_likelihood_options_helper(stats=('mesh2_spectrum', 'mesh3_spectrum'
         Dictionary with keys ['observables', 'covariance'].
         'covariance' is a dictionary specifying how to construct the covariance matrix.
         'observables' contains a list of dictionary (one for each observable), with keys:
-        {'stat': {'kind': ..., 'basis': ..., 'select': {...}}, 'catalog': {'version':, ...}, 'theory': {'model': ...}, 'window': {}}
+        {'stat': {'kind': ..., 'basis': ..., 'select': [...]}, 'catalog': {'version':, ...}, 'theory': {'model': ...}, 'window': {}}
 
     """
     if isinstance(stats, str):
@@ -711,8 +739,7 @@ def generate_likelihood_options_helper(stats=('mesh2_spectrum', 'mesh3_spectrum'
         if 'data' not in version:
             catalog['imock'] = '*'  # read all available mocks
             catalog.setdefault('stats_dir', mock_dir)
-        observables.append({'stat': {'kind': stat},
-                            'catalog': catalog})
+        observables.append({'stat': {'kind': stat}, 'catalog': catalog})
     covariance = {'version': covariance, 'stats_dir': mock_dir}
     return fill_fiducial_likelihood_options({'observables': observables, 'covariance': covariance})
 
@@ -749,6 +776,8 @@ def get_full_tracer_zrange(tracerz=None, zrange=None):
         else:
             # Not in translate_zrange
             tracer = tracerz
+        if zrange is None:
+            raise ValueError(f'zrange not found for {tracerz}; choose one from {list(translate_zrange)}')
         return tracer, zrange
 
     if isinstance(tracerz, str):
@@ -767,18 +796,43 @@ def _get_level(level: int | dict=None):
     return level
 
 
-def _config_hash(config, length=8):
-    """Return a short SHA-256 hash of a canonicalized config dict."""
+def _base_type_options(options):
+    """
+    Recursively cast objects of input dictionary ``d`` to Python base types
+    so they can be serialized by standard YAML.
+    """
+    def convert(v):
+        if isinstance(v, dict):
+            return {k: convert(vv) for k, vv in v.items()}
+        if isinstance(v, (list, tuple, set, frozenset)):
+            return [convert(vv) for vv in v]
+        if isinstance(v, np.ndarray):
+            if v.size == 1:
+                return convert(v.item())
+            return [convert(vv) for vv in v.tolist()]
+        if isinstance(v, (np.integer,)):
+            return int(v)
+        if isinstance(v, (np.floating,)):
+            return float(v)
+        if isinstance(v, (np.bool_,)):
+            return bool(v)
+        if v is None or isinstance(v, (bool, numbers.Number, str)):
+            return v
+        return str(v)
+    return convert(options)
+
+
+def _hash_options(options, length=8):
+    """Return a short SHA-256 hash of a canonicalized options dict."""
     def _canonical(obj):
-        if isinstance(obj, Path):
-            return str(obj)
         if isinstance(obj, dict):
             return sorted((_canonical(k), _canonical(v)) for k, v in obj.items())
-        if isinstance(obj, (list, tuple)):
+        if isinstance(obj, list):
             return [_canonical(x) for x in obj]
         return obj
-    s = json.dumps(_canonical(config), sort_keys=True)
+    s = json.dumps(_canonical(_base_type_options(options)), sort_keys=True)
     return hashlib.sha256(s.encode()).hexdigest()[:length]
+
 
 
 def _str_from_observable_options(options: dict, level: int=None) -> str:
@@ -814,7 +868,7 @@ def _str_from_observable_options(options: dict, level: int=None) -> str:
             catalog_str.append('-'.join(tracer_catalog_str))
         out_str.append('x'.join(catalog_str))
 
-    # Then, stat and select, e.g. S2-ell0-0.02-0.2-ell2-0.02-0.2
+    # Then, stat and select, e.g. S2-ell0-k-0.02-0.2-ell2-k-0.02-0.2
     translate_stat_name = {'S2': ['mesh2_spectrum'],
                       'S3': ['mesh3_spectrum'],
                       'BAOR': ['bao', 'recon'],
@@ -832,14 +886,27 @@ def _str_from_observable_options(options: dict, level: int=None) -> str:
         out_str.append(found)
     if level['stat'] >= 2:
         select_str = []
-        for ell, limits in stat_options.get('select', {}).items():
-            if isinstance(limits, (list, tuple)):
+        select = stat_options.get('select', [])
+        if callable(select):  # custom binning
+            select_str.append(getattr(select, 'name', 'custom'))
+        else:
+            def _str_ell(ell):
                 if isinstance(ell, (list, tuple)):
                     ell = ''.join([str(ell) for ell in ell])
                 else:
                     ell = str(ell)
-                prec = dict(prec_min=2, prec_max=3) if name.startswith('S') else dict(prec_min=0, prec_max=0)
-                select_str.append(f'ell{ell}-' + '-'.join(float2str(lim, **prec) for lim in limits))
+                return ell
+                        
+            for _select in select:
+                _select = dict(_select)
+                label = []
+                for key in list(_select):
+                    if key == 'ells':
+                        label.append('ell' + _str_ell(_select.pop(key)))
+                for coord_name, limits in _select.items():
+                    prec = dict(prec_min=2, prec_max=3) if name.startswith('S') else dict(prec_min=0, prec_max=0)
+                    label.append(coord_name + '-'.join(float2str(lim, **prec) for lim in limits))
+                select_str.append('-'.join(label))
         select_str = '-'.join(select_str)
         out_str.append(select_str)
 
@@ -915,7 +982,80 @@ def get_fits_fn(fits_dir=Path(os.getenv('SCRATCH', '.')) / 'fits', kind='chain',
     fits_dir = Path(fits_dir)
     _str_from_options = [str_from_likelihood_options(likelihood_options, level=level) for likelihood_options in likelihoods]
     _str_from_options = '_'.join(_str_from_options)
-    _hash = _config_hash(likelihoods)
+    _hash = _hash_options(likelihoods)
     extra = f'_{extra}' if extra else ''
     ichain = f'_{ichain:d}' if ichain is not None else ''
     return fits_dir / f'{_str_from_options}-{_hash}{extra}' / f'{kind}{ichain}.{ext}'
+
+
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+
+def write_options(filename, options):
+    """Write options to ``filename``."""
+    options = _base_type_options(options)
+
+    class FlowList(list):
+        pass
+    
+    def flow_list_representer(dumper, data):
+        return dumper.represent_sequence(
+            'tag:yaml.org,2002:seq',
+            data,
+            flow_style=True,
+        )
+    
+    yaml.add_representer(FlowList, flow_list_representer)
+
+    def mark_flow_lists(obj):
+        if isinstance(obj, dict):
+            return {k: mark_flow_lists(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            obj = [mark_flow_lists(v) for v in obj]
+            # choose the lists you want inline
+            if all(not isinstance(v, (dict, list)) for v in obj):
+                return FlowList(obj)
+            return obj
+        return obj
+
+    # To use flow style for simple lists
+    options = mark_flow_lists(options)
+    filename = Path(filename)
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    with open(filename, 'w') as file:
+        yaml.dump(options, file, sort_keys=False, default_flow_style=False)
+
+
+def read_options(filename):
+    """Read options from ``filename``."""
+
+    class YamlLoader(yaml.SafeLoader):
+        """
+        *yaml* loader that correctly parses numbers.
+        Taken from https://stackoverflow.com/questions/30458977/yaml-loads-5e-6-as-string-and-not-a-number.
+        """
+    
+    # https://stackoverflow.com/questions/30458977/yaml-loads-5e-6-as-string-and-not-a-number
+    YamlLoader.add_implicit_resolver(u'tag:yaml.org,2002:float',
+                                     re.compile(u'''^(?:
+                                     [-+]?(?:[0-9][0-9_]*)\\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+                                     |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
+                                     |\\.[0-9_]+(?:[eE][-+][0-9]+)?
+                                     |[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\\.[0-9_]*
+                                     |[-+]?\\.(?:inf|Inf|INF)
+                                     |\\.(?:nan|NaN|NAN))$''', re.X),
+                                     list(u'-+0123456789.'))
+    
+    YamlLoader.add_implicit_resolver('!none', re.compile('None$'), first='None')
+
+    def none_constructor(loader, node):
+        return None
+    
+    YamlLoader.add_constructor('!none', none_constructor)
+
+    with open(filename, 'r') as file:
+        return yaml.load(file, Loader=YamlLoader)
