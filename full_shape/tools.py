@@ -23,6 +23,8 @@ import json
 import hashlib
 import logging
 import numbers
+import itertools
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -30,29 +32,39 @@ import scipy as sp
 import lsstypes as types
 from lsstypes.utils import get_hartlap2007_factor, get_percival2014_factor, mkdir
 
-from clustering_statistics.tools import (float2str, get_full_tracer, get_simple_tracer, _make_tuple,
-                                         get_simple_stats, _unzip_catalog_options, setup_logging)
+from clustering_statistics.tools import (write_stats, float2str, get_full_tracer, get_simple_tracer, _make_tuple,
+                                         get_simple_stats, _unzip_catalog_options, default_mpicomm, setup_logging)
 from clustering_statistics import tools as clustering_tools
 
 
 logger = logging.getLogger('tools')
 
 
-def get_cosmology():
+_fiducial = None
+
+def get_fiducial():
+    global _fiducial
+    if _fiducial is None:
+        from cosmoprimo.fiducial import DESI
+        _fiducial = DESI()
+    return _fiducial
+
+
+def get_cosmology(cosmology_options: dict=None):
     """
-    Construct and return a :mod:`desilike` :class:`Cosmoprimo` calculator and the DESI fiducial.
+    Construct and return a :mod:`desilike` :class:`Cosmoprimo` calculator.
 
     Returns
     -------
-    (cosmo, fiducial)
-        - cosmo: :class:`desilike.theories.Cosmoprimo` instance with configured priors.
-        - fiducial: :class:`cosmoprimo.fiducial.DESI` instance used as fiducial cosmology.
+    cosmo : :class:`desilike.theories.Cosmoprimo`
+        Instance with configured priors.
     """
     from desilike.theories import Cosmoprimo
-    from cosmoprimo.fiducial import DESI
-
-    fiducial = DESI()
-    cosmo = Cosmoprimo(engine='class', fiducial=fiducial)
+    if isinstance(cosmology_options, Cosmoprimo):
+        return cosmology_options
+    cosmology_options = cosmology_options or {}
+    model = cosmology_options.get('model', 'base_ns-fixed')
+    cosmo = Cosmoprimo(engine='class', fiducial=get_fiducial())
     # Free parameters h, omega_cdm, omega_b, logA with uniform priors
     # n_s and tau_reio are fixed
     # A Gaussian prior on omega_b.
@@ -61,18 +73,21 @@ def get_cosmology():
         'Omega_m':  {'derived': True},
         'sigma8_m': {'derived': True},
         'tau_reio': {'fixed': True},
-        'n_s':      {'fixed': True},
-        'omega_b':  {'fixed': False, 'prior': {'dist': 'norm',    'loc': 0.02237,  'scale': 0.00037}},
+        'n_s':      {'fixed': 'ns-fixed' in model},
+        'omega_b':  {'fixed': False, 'prior': {'dist': 'norm', 'loc': 0.02237,  'scale': 0.00037}},
         'h':        {'fixed': False, 'prior': {'dist': 'uniform', 'limits': [0.5,  0.9]}},
         'omega_cdm':{'fixed': False, 'prior': {'dist': 'uniform', 'limits': [0.05, 0.2]}},
         'logA':     {'fixed': False, 'prior': {'dist': 'uniform', 'limits': [2.0,  4.0]}},
     }
+    if 'w0wa' in model:
+        params['w0_fld'] = {'fixed': False}
+        params['wa_fld'] = {'fixed': False}
     for name, config in params.items():
         if name in cosmo.init.params:
             cosmo.init.params[name].update(**config)
         else:
             cosmo.init.params[name] = config
-    return cosmo, fiducial
+    return cosmo
 
 
 
@@ -173,7 +188,7 @@ def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, 
     return params
 
 
-def get_theory(stat: str, theory: dict, z: float, cosmo, fiducial):
+def get_theory(stat: str, theory_options: dict, z: float, cosmology: object=None):
     """
     Return a configured theory desilike calculator for the requested statistic.
 
@@ -181,12 +196,12 @@ def get_theory(stat: str, theory: dict, z: float, cosmo, fiducial):
     ----------
     stat : str
         Statistic name, e.g. 'mesh2_spectrum' or 'mesh3_spectrum'.
-    theory : dict
+    theory_options : dict
         Theory options dict containing at least 'model' and possibly other keys.
     z : float
         Effective redshift.
-    cosmo, fiducial : objects
-        Cosmology calculator and fiducial cosmology to pass to templates.
+    cosmology : Cosmoprimo
+        Cosmology calculator.
 
     Returns
     -------
@@ -195,8 +210,16 @@ def get_theory(stat: str, theory: dict, z: float, cosmo, fiducial):
     """
     from desilike.theories.galaxy_clustering import (DirectPowerSpectrumTemplate, REPTVelocileptorsTracerPowerSpectrumMultipoles,
     FOLPSv2TracerPowerSpectrumMultipoles, FOLPSv2TracerBispectrumMultipoles)
-    template = DirectPowerSpectrumTemplate(fiducial=fiducial, cosmo=cosmo, z=z)
-    theory_options = theory
+    theory_options = dict(theory_options)
+    fiducial = get_fiducial()
+    template = None
+    theory_options.setdefault('template', 'direct')
+    if theory_options['template'] == 'direct':
+        template = DirectPowerSpectrumTemplate(fiducial=fiducial, cosmo=cosmology, z=z)
+    elif theory_options['template'] == 'shapefit':
+        template = ShapeFitPowerSpectrumTemplate(fiducial=fiducial, z=z)
+    if template is None:
+        raise ValueError(f'template not found for {stat} and {repr(theory_options["template"])}')
     theory = None
     if 'mesh2_spectrum' in stat:
         if theory_options['model'] == 'reptvelocileptors':
@@ -285,6 +308,31 @@ def unpack_stats(stats):
         return (unpack_stats(likelihood.observable), unpack_stats(likelihood.window), likelihood.covariance)
 
 
+def combine_covariances(covariances, observable):
+    """Combine input covariances into a large one, for observable."""
+    olabels = observable.labels(level=1)
+    nblocks = len(olabels)
+    value = [[None for i in range(nblocks)] for i in range(nblocks)]
+    for ilabel1, ilabel2 in itertools.product(range(nblocks), repeat=2):
+        label1, label2 = (olabels[ilabel] for ilabel in [ilabel1, ilabel2])
+        block = None
+        for covariance in covariances:
+            clabels = covariance.observable.labels(level=1)
+            csizes = list(covariance.observable.sizes(level=1))
+            cumsizes = np.cumsum([0] + csizes)
+            if label1 in clabels and label2 in clabels:
+                i1, i2 = clabels.index(label1), clabels.index(label2)
+                block = covariance.value()[cumsizes[i1]:cumsizes[i1 + 1], cumsizes[i2]:cumsizes[i2 + 1]]
+                break
+        if block is None:
+            warnings.warn(f'block {label1}, {label2} not found, assuming it is 0')
+            shape = tuple(observable.get(**label).size for label in [label1, label2])
+            block = np.zeros(shape)
+        value[ilabel1][ilabel2] = block
+    value = np.block(value)
+    return types.CovarianceMatrix(observable=observable, value=value)
+
+
 def _infer_effective_nparams(observables: list[dict]) -> int:
     """Infer effective free-parameter count for covariance corrections.
 
@@ -308,14 +356,15 @@ def _get_covariance_correction_factor(covariance: types.CovarianceMatrix,
         corrections = [corrections]
     corrections = [str(corr).lower() for corr in (corrections or [])]
 
-    nobs = int(covariance.attrs.get('nobs', 0))
-    nbins = int(covariance.value().shape[0])
     factor = 1.
-    metadata = {
-        'nobs': nobs,
-        'nbins': nbins,
-        'corrections': tuple(corrections),
-    }
+    nbins = int(covariance.value().shape[0])
+    nobs = covariance.attrs['nobs']
+    metadata = {'nbins': nbins, 'corrections': tuple(corrections)}
+    if nobs is None:  # analytic covariance matrix
+        return factor, metadata | dict(corrections=tuple())
+
+    nobs = int(nobs)
+    metadata.update(nobs=nobs)
 
     if 'hartlap' in corrections:
         hartlap = get_hartlap2007_factor(nobs, nbins)
@@ -334,8 +383,9 @@ def _get_covariance_correction_factor(covariance: types.CovarianceMatrix,
     return factor, metadata
 
 
-def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False,
-              get_stats_fn=clustering_tools.get_stats_fn, cache_dir: str | Path=None):
+@default_mpicomm
+def get_stats(observables_options: list[dict], covariance_options: dict=None, unpack: bool=False,
+              get_stats_fn=clustering_tools.get_stats_fn, cache_dir: str | Path=None, cache_mode: str='rw', mpicomm=None):
     """
     Load and assemble measurement products (data, windows, covariance).
 
@@ -347,9 +397,9 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
 
     Parameters
     ----------
-    observables : list[dict]
+    observables_options : list[dict]
         List of observable option dicts describing which stats to load.
-    covariance : dict or None
+    covariance_options : dict or None
         Options used to locate covariance/mock files.
     unpack : bool, optional
         If ``True`` return unpacked (data, windows, covariance) rather than a :class:`types.GaussianLikelihood`.
@@ -357,26 +407,36 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
         Function used to locate stats files.
     cache_dir : str or Path, optional
         Directory to use for caching assembled likelihoods.
+    cache_mode : str, optional
+        'rw' for read/write; 'r' for read-only.
 
     Returns
     -------
     types.GaussianLikelihood or tuple
     """
-    observables_options = observables
-    covariance_options = covariance or {}
-    cache_fn = None
+    covariance_options = covariance_options or {}
+
     if cache_dir is not None:
-        cache_dir = Path(cache_dir)
-        _full_config = {'observables': observables_options, 'covariance': covariance_options}
-        _str_from_options = str_from_likelihood_options(_full_config, level={'catalog': 2, 'covariance': 1})
-        _hash = _hash_options(_full_config)
-        cache_fn = cache_dir / 'prepared_stats' / f'{_str_from_options}-{_hash}.h5'
-        if cache_fn.exists():
+        cache_dir = Path(cache_dir) / 'prepared_stats'
+    read_cache = cache_dir is not None and 'r' in cache_mode
+    write_cache = cache_dir is not None and 'w' in cache_mode
+
+    def get_cache_fn(kind, kwargs):
+        if cache_dir is None:
+            return None
+        _full_options = {'observables': [{name: dict(observable_options[name]) for name in ['stat', 'catalog']} for observable_options in observables_options], 'covariance': covariance_options}
+        _str_from_options = str_from_likelihood_options(_full_options, level={'stat': 1, 'catalog': 2, 'covariance': 1})
+        _hash = _hash_options(_full_options | kwargs)
+        return cache_dir / f'{kind}_{_str_from_options}-{_hash}.h5'
+
+    def get_from_cache(cache_fn):
+        if cache_fn is None or not read_cache:
+            return None
+        stats = None
+        if all(mpicomm.allgather(cache_fn.exists())):
             logger.info(f'Reading cached stats {cache_fn}.')
-            likelihood = types.read(cache_fn)
-            if unpack:
-                return unpack_stats(likelihood)
-            return likelihood
+            stats = types.read(cache_fn)
+        return mpicomm.bcast(stats, root=0)
 
     # Helper: iterate over (stat, tracer) combinations
     def iter_stat_tracer_combinations(observables_options, **kwargs):
@@ -433,49 +493,103 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
                     pole = pole.select(**{coord_name: slice(0, None, rebin)})
                 pole = pole.select(**{coord_name: tuple(limits[:2])})
             observable = observable.at(**label).replace(pole)
-        # FIXME
-        observable = observable.get(ells=[label['ells'] for label in labels])
+        observable = observable.get(labels)
         return observable
 
     # Loading data, window
-    loaded_data, loaded_window, joint_labels = [], [], {'observables': [], 'tracers': []}
+    all_data_fns, all_imocks, joint_labels = [], [], {'observables': [], 'tracers': []}
     for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
+        file_kw = {'imock': None} | file_kw
+        all_imocks.append(file_kw['imock'])
         fn = get_stats_fn(kind=stat, **file_kw)
-        if isinstance(fn, list):
-            fns = fn
-            mocks = [types.read(fn) for fn in fns if fn.exists()]
-            data = types.mean(mocks)
-        else:
-            data = types.read(fn)
-        data = _apply_select(data, select=kw['stat'].get('select', None))
-        for field, value in labels.items():
-            joint_labels[field].append(value)
-        file_kw = dict(file_kw)
+        if not isinstance(fn, list): fn = [fn]
+        all_data_fns.append(fn)
+        for name in joint_labels:
+            joint_labels[name].append(labels[name])
+    cache_fn = get_cache_fn('data', dict(imocks=all_imocks))
+    data = get_from_cache(cache_fn)
+    if data is None:
+        if mpicomm.rank == 0:
+            data = []
+            for fns in all_data_fns:
+                data.append(types.mean([types.read(fn) for fn in fns]))
+            # Join mesh2_spectrum, mesh3_spectrum, etc.
+            data = pack_stats(data, **joint_labels)
+        data = mpicomm.bcast(data, root=0)
+    if write_cache:
+        write_stats(cache_fn, data)
+    windows = []
+    for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
+        data = data.at(**labels).replace(_apply_select(data.get(**labels), select=kw['stat'].get('select', None)))
         imock = file_kw.get('imock', None)
-        if imock is not None:
+        if imock is not None:  # FIXME
             file_kw['imock'] = 0
         fn = get_stats_fn(kind=f'window_{stat}', **file_kw)
-        window = types.read(fn).at.observable.match(data)
-        loaded_data.append(data)
-        loaded_window.append(window)
-
-    data = pack_stats(loaded_data, **joint_labels)
-    window = pack_stats(loaded_window, **joint_labels)
-
-    # Mock-based covariance
-    all_fns = []
-    for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
-        file_kw = file_kw | {'imock': '*'} | covariance_options
-        file_kw['tracer'] = get_full_tracer(get_simple_tracer(file_kw['tracer']), version=file_kw['version'])
-        all_fns.append(get_stats_fn(kind=stat, **file_kw))
-    all_fns = list(zip(*all_fns, strict=True))  # get a list of list of file names
-    mocks = []
-    for fns in all_fns:
-        if all(fn.exists() for fn in fns):
-            mock = types.ObservableTree([types.read(fn) for fn in fns], **joint_labels)
-            mocks.append(mock)
-    covariance = types.cov(mocks)
-    covariance.attrs['nobs'] = len(mocks)
+        window = types.read(fn).at.observable.match(data.get(**labels))
+        windows.append(window)
+    window = pack_stats(windows, **joint_labels)
+    print(covariance_options)
+    # Analytic covariances
+    if covariance_options['source'] == 'jaxpower':
+        # WARNING: not tested yet!
+        full_tracers = []
+        for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
+            file_kw = file_kw | covariance_options
+            imock = file_kw.get('imock', None)
+            if imock is not None:  # FIXME
+                file_kw['imock'] = 0
+            full_tracers.append(file_kw['tracer'] + (file_kw['tracer'][-1],) * (len(labels['tracers']) - len(file_kw['tracer'])))
+        tracers = sorted({t for tpl in full_tracers for t in tpl})
+        all_combinations = []
+        for tpl in full_tracers:
+            n = len(tpl)
+            all_combinations.extend(itertools.product(tracers, repeat=n))
+        all_combinations = list(dict.fromkeys(all_combinations))  # remove duplicates
+        covariances = []
+        # Query all possible cross-covariances
+        # FIXME if there are 3pt-covariances
+        for tracers in all_combinations:
+            if all(tracer == tracers[0] for tracer in tracers):
+                tracers = tracers[0]
+            fn = get_stats_fn(kind=f'covariance_{stat}', **(file_kw | dict(tracer=tracers)))
+            if fn.exists():
+                covariances.append(types.read(fn))
+        if not covariances:
+            raise ValueError('no covariances found')
+        covariance = combine_covariances(covariances, data)
+        covariance.attrs['nobs'] = None
+    elif covariance_options['source'] == 'mock':
+        # Mock-based covariance
+        all_fns = []
+        for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
+            file_kw = file_kw | {'imock': '*'} | covariance_options
+            file_kw['tracer'] = get_full_tracer(get_simple_tracer(file_kw['tracer']), version=file_kw['version'])
+            imocks = file_kw.pop('imock')
+            if imocks == '*':
+                imocks = list(range(2001))
+            all_fns.append([get_stats_fn(kind=stat, **file_kw, imock=imock) for imock in imocks])
+        all_fns = list(zip(*all_fns, strict=True))  # get a list of list of file names
+        ifns_exists = []
+        if mpicomm.rank == 0:
+            for ifn, fns in enumerate(all_fns):
+                if all(fn.exists() for fn in fns):
+                    ifns_exists.append(ifn)
+        ifns_exists = mpicomm.bcast(ifns_exists, root=0)
+        imocks_exists = [imocks[ifn] for ifn in ifns_exists]
+        cache_fn = get_cache_fn('covariance', dict(imocks=imocks_exists))
+        covariance = get_from_cache(cache_fn)
+        if covariance is None:
+            mocks = []
+            if mpicomm.rank == 0:
+                for ifn in ifns_exists:
+                    # Join mesh2_spectrum, mesh3_spectrum, etc.
+                    mock = types.ObservableTree([types.read(fn) for fn in all_fns[ifn]], **joint_labels)
+                    mocks.append(mock)
+                covariance = types.cov(mocks)
+                covariance.attrs['nobs'] = len(mocks)
+            covariance = mpicomm.bcast(covariance, root=0)
+        if cache_fn is not None:
+            write_stats(cache_fn, covariance)
     covariance = covariance.at.observable.match(data)
 
     factor, metadata = _get_covariance_correction_factor(covariance, observables_options, covariance_options)
@@ -490,22 +604,23 @@ def get_stats(observables: list[dict], covariance: dict=None, unpack: bool=False
             info += f", hartlap={metadata['hartlap_factor']:.6f}"
         if 'percival_factor' in metadata:
             info += f", percival={metadata['percival_factor']:.6f}, nparams={metadata['nparams']}"
-        logger.info(info)
+        if mpicomm.rank == 0:
+            logger.info(info)
 
     likelihood = types.GaussianLikelihood(
         observable=data,
         window=window,
         covariance=covariance,
     )
-    if cache_fn is not None:
-        likelihood.write(cache_fn)
     if unpack:
         return unpack_stats(likelihood)
     return likelihood
 
 
+@default_mpicomm
 def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=None,
-                          cosmo=None, fiducial=None, get_stats_fn=clustering_tools.get_stats_fn, cache_dir:str | Path=None):
+                          cosmology_options: dict=None, get_stats_fn=clustering_tools.get_stats_fn,
+                          get_theory=get_theory, cache_dir:str | Path=None, cache_mode: str='rw', mpicomm=None):
     """
     Build a single :mod:`desilike` Gaussian likelihood from provided options.
 
@@ -515,12 +630,14 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
         Options containing 'observables' list and 'covariance' dict.
     stats : types.GaussianLikelihood or None
         Preloaded measurements (if ``None`` they will be loaded via :func:`get_stats`).
-    cosmo, fiducial : optional
-        Cosmology objects; if not provided, constructed via get_cosmology.
+    cosmology_options : optional
+        Cosmology options or object or :class:`desilike.theories.Cosmoprimo`.
     get_stats_fn : callable, optional
         Function to locate measurement files.
     cache_dir : str | Path, optional
         Directory used for caching pre-computed emulators.
+    cache_mode : str, optional
+        'rw' for read/write; 'r' for read-only.
 
     Returns
     -------
@@ -530,11 +647,10 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
     from desilike.likelihoods import ObservablesGaussianLikelihood
     # likelihood_options: {'observables': [observable_options], 'covariance': {}}
     observables_options = likelihood_options['observables']
-    covariance = likelihood_options.get('covariance', {})
-    if cosmo is None:
-        cosmo, fiducial = get_cosmology()
+    covariance_options = likelihood_options.get('covariance', {})
+    cosmology = get_cosmology(cosmology_options)
     if stats is None:
-        stats = get_stats(observables_options, covariance=covariance, unpack=False, get_stats_fn=get_stats_fn, cache_dir=cache_dir)
+        stats = get_stats(observables_options, covariance_options=covariance_options, unpack=False, get_stats_fn=get_stats_fn, cache_dir=cache_dir)
     data, windows, covariance = unpack_stats(stats)
     labels = covariance.observable.labels(level=1)
     observables = []
@@ -548,7 +664,7 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
             raise NotImplementedError(stat)
         for label, pole in window.observable.items(level=None):
             z = pole.attrs['zeff']
-        theory = get_theory(stat, theory=observable_options['theory'], z=z, cosmo=cosmo, fiducial=fiducial)
+        theory = get_theory(stat, theory_options=observable_options['theory'], z=z, cosmology=cosmology)
         namespace = _str_from_observable_options(
             observable_options, level={'catalog': 1, 'stat': 0, 'theory': 0, 'covariance': 0})
         for param in theory.init.params:
@@ -558,15 +674,20 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
         observable()
         if observable_options['emulator'] is not None:
             assert cache_dir is not None, 'cache_dir must be provided for emulator'
+            read_cache = cache_dir is not None and 'r' in cache_mode
+            write_cache = cache_dir is not None and 'w' in cache_mode
             cache_dir = Path(cache_dir)
-            filename = cache_dir / _str_from_observable_options(observable_options, level={'theory': 100, 'catalog': 2}) / 'emulator.npy'
-            filename.parent.mkdir(parents=True, exist_ok=True)
+            _hash = _hash_options({name: observable_options[name] for name in ['cosmology', 'theory', 'catalog']})
+            _str_cosmology = str_from_cosmology_options(observable_options['cosmology'], level=100)
+            _str_theory = _str_from_observable_options(observable_options, level={'theory': 100, 'catalog': 2})
+            cache_fn = cache_dir / f'emulator_{_str_cosmology}' / f'emulator_{_str_theory}_{_hash}.npy'
             from desilike.emulators import EmulatedCalculator, Emulator, TaylorEmulatorEngine
-            if filename.exists():
-                logger.info(f'Reading cached emulator {filename}')
-                emulated_pt = EmulatedCalculator.load(filename)
+            emulated_pt = None
+            if read_cache and cache_fn.exists():
+                logger.info(f'Reading cached emulator {cache_fn}')
+                emulated_pt = EmulatedCalculator.load(cache_fn)
             else:
-                logger.info(f'Fitting emulator {filename}')
+                logger.info(f'Fitting emulator {cache_fn}')
                 emulator = Emulator(
                     theory.pt,
                     engine=TaylorEmulatorEngine(method='finite', order=observable_options['emulator'].get('order', 3)),
@@ -574,14 +695,16 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
                 emulator.set_samples()
                 emulator.fit()
                 emulated_pt = emulator.to_calculator()
-                emulated_pt.save(filename)
+                if write_cache:
+                    emulated_pt.save(cache_fn)
             theory.init.update(pt=emulated_pt)
             theory.init.params.update(theory_params)
         observables.append(observable)
     return ObservablesGaussianLikelihood(observables, covariance=covariance.value())
 
 
-def get_likelihood(likelihoods_options: dict | list[dict], cosmo=None, fiducial=None, get_stats_fn=clustering_tools.get_stats_fn, cache_dir:str | Path=None):
+def get_likelihood(likelihoods_options: dict | list[dict], cosmology_options: dict=None, get_stats_fn=clustering_tools.get_stats_fn,
+                   get_theory=get_theory, cache_dir:str | Path=None, cache_mode: str='rw'):
     """
     Build a desilike :class:`SumLikelihood, summed over all tracers.
 
@@ -589,24 +712,26 @@ def get_likelihood(likelihoods_options: dict | list[dict], cosmo=None, fiducial=
     ----------
     likelihoods_options : dict, list[dict]
         List of options {'observables': [observable_options, ...], 'covariance': {}}.
-    cosmo, fiducial : optional
-        Cosmology objects; if not provided, constructed via get_cosmology.
+    cosmology_options : optional
+        Cosmology options or object or :class:`desilike.theories.Cosmoprimo`.
     get_stats_fn : callable, optional
         Function to locate measurement files.
     cache_dir : str | Path, optional
         Directory used for caching pre-computed emulators.
+    cache_mode : str, optional
+        'rw' for read/write; 'r' for read-only.
 
     Returns
     -------
     SumLikelihood
     """
     from desilike.likelihoods import SumLikelihood
-    if cosmo is None:
-        cosmo, fiducial = get_cosmology()
+    cosmology = get_cosmology(cosmology_options)
     if isinstance(likelihoods_options, dict):
         likelihoods_options = [likelihoods_options]
-    likelihoods = [get_single_likelihood(likelihood_options,
-                  cosmo=cosmo, fiducial=fiducial, get_stats_fn=get_stats_fn, cache_dir=cache_dir) for likelihood_options in likelihoods_options]
+    likelihoods = [get_single_likelihood(likelihood_options, cosmology_options=cosmology,
+                                         get_stats_fn=get_stats_fn, get_theory=get_theory,
+                                         cache_dir=cache_dir, cache_mode=cache_mode) for likelihood_options in likelihoods_options]
     return SumLikelihood(likelihoods)
 
 
@@ -645,7 +770,12 @@ def propose_fiducial_observable_options(stat, tracer=None, zrange=None):
 
 def propose_fiducial_covariance_options():
     """Return dictionary of default covariance options."""
-    return {'version': 'holi-v1-altmtl', 'corrections': ['hartlap', 'percival']}
+    return {'source': 'mock', 'version': 'holi-v1-altmtl', 'corrections': ['hartlap', 'percival']}
+
+
+def propose_fiducial_cosmology_options():
+    """Return dictionary of default cosmology options."""
+    return {'model': 'base_ns-fixed', 'template': 'direct'}
 
 
 def propose_fiducial_sampler_options(sampler=None):
@@ -671,8 +801,8 @@ def fill_fiducial_observable_options(options):
     tracer, zrange = (options['catalog'][name] for name in ['tracer', 'zrange'])
     fiducial_options = propose_fiducial_observable_options(stat, tracer, zrange)
     options = fiducial_options | options
-    for key, value in options.items():
-        options[key] = fiducial_options[key] | value
+    for key, value in fiducial_options.items():
+        options[key] = value | options[key]
     return options
 
 
@@ -689,9 +819,14 @@ def fill_fiducial_likelihood_options(options):
 def fill_fiducial_options(options):
     """Fill missing options with fiducial values."""
     options = dict(options)
+    options['cosmology'] = propose_fiducial_cosmology_options() | {'template': 'direct'} | options.get('cosmology', {})
     likelihoods = options.get('likelihoods', None)
     if likelihoods is not None:
         options['likelihoods'] = fill_fiducial_likelihood_options(options['likelihoods'])
+        # Add cosmology arguments to each observable
+        for likelihood_options in options['likelihoods']:
+            for observable_options in likelihood_options['observables']:
+                observable_options['cosmology'] = options['cosmology']
     for name in ['sampler', 'profiler']:
         options.setdefault(name, {})
         options[name] = globals()[f'propose_fiducial_{name}_options'](options[name].get(name)) | options[name]
@@ -788,7 +923,7 @@ def get_full_tracer_zrange(tracerz=None, zrange=None):
 
 def _get_level(level: int | dict=None):
     """Compact helper to normalise verbosity level for string helpers."""
-    _default_level = {'stat': 1, 'catalog': 1, 'theory': 0, 'covariance': 0}
+    _default_level = {'stat': 1, 'catalog': 1, 'theory': 0, 'covariance': 0, 'cosmology': 1}
     if level is None: level = {}
     if not isinstance(level, dict):
         level = {name: level for name in _default_level}
@@ -832,7 +967,6 @@ def _hash_options(options, length=8):
         return obj
     s = json.dumps(_canonical(_base_type_options(options)), sort_keys=True)
     return hashlib.sha256(s.encode()).hexdigest()[:length]
-
 
 
 def _str_from_observable_options(options: dict, level: int=None) -> str:
@@ -917,7 +1051,7 @@ def _str_from_observable_options(options: dict, level: int=None) -> str:
     return '-'.join(out_str)
 
 
-def str_from_likelihood_options(likelihood_options, level: int=None):
+def str_from_likelihood_options(likelihood_options, level: int | dict=None):
     """
     Return a compact string identifier for likelihood options.
 
@@ -938,7 +1072,10 @@ def str_from_likelihood_options(likelihood_options, level: int=None):
         out_str.append(_str_from_observable_options(options, level=level))
     if level['covariance'] > 0:
         covariance = likelihood_options.get('covariance', {}) or {}
-        covariance_str = ['cov-' + covariance.get('version', 'none')]
+        covariance_str = []
+        covariance_str.append(covariance.get('source', 'none'))
+        covariance_str.append(covariance.get('version', 'none'))
+        covariance_str = ['cov-' + '-'.join(covariance_str)]
         if level['covariance'] >= 3:
             corrections = covariance.get('corrections', None)
             if isinstance(corrections, str):
@@ -953,8 +1090,49 @@ def str_from_likelihood_options(likelihood_options, level: int=None):
     return '+'.join(out_str)
 
 
+def str_from_cosmology_options(cosmology_options: dict, level: int | dict=None):
+    """
+    Return a compact string identifier for cosmology options.
+
+    Parameters
+    ----------
+    cosmology_options : dict
+        Dictionary with keys 'model', 'template'.
+    level : dict
+        "Verbosity level". Default is {'cosmology': 1}.
+        Increase for more details.
+    """
+    level = _get_level(level)
+    out_str = []
+    if level['cosmology'] >= 1:
+        model, template = cosmology_options['model'], cosmology_options['template']
+        if template.lower() == 'direct':
+            out_str.append(f'cosmo-{model}')
+        else:
+            out_str.append(f'template-{template}')
+    return '-'.join(out_str)
+
+
+def str_from_options(options: dict, level: int | dict=None):
+    """
+    Return a compact string identifier for options.
+
+    Parameters
+    ----------
+    options : dict
+        Dictionary with keys 'likelihoods', 'cosmology'.
+    level : dict
+        "Verbosity level". Default is {'stat': 1, 'catalog': 1, 'theory': 0, 'covariance': 0, 'cosmology': 1}.
+        Increase for more details.
+    """
+    level = _get_level(level)
+    out_str = [str_from_cosmology_options(options['cosmology'], level=level)]
+    out_str += [str_from_likelihood_options(likelihood_options, level=level) for likelihood_options in options['likelihoods']]
+    return '_'.join(out_str)
+
+
 def get_fits_fn(fits_dir=Path(os.getenv('SCRATCH', '.')) / 'fits', kind='chain', likelihoods: list=None,
-                sampler: dict=None, profiler: dict=None, ichain: int=None,
+                sampler: dict=None, profiler: dict=None, cosmology: dict=None, ichain: int=None,
                 level=None, extra='', ext='npy'):
     """
     Construct a file path for fit outputs based on likelihood and run options.
@@ -980,9 +1158,9 @@ def get_fits_fn(fits_dir=Path(os.getenv('SCRATCH', '.')) / 'fits', kind='chain',
         Fit file name.
     """
     fits_dir = Path(fits_dir)
-    _str_from_options = [str_from_likelihood_options(likelihood_options, level=level) for likelihood_options in likelihoods]
-    _str_from_options = '_'.join(_str_from_options)
-    _hash = _hash_options(likelihoods)
+    options = {'likelihoods': likelihoods, 'cosmology': cosmology}
+    _str_from_options = str_from_options(options, level=level)
+    _hash = _hash_options(options)
     extra = f'_{extra}' if extra else ''
     ichain = f'_{ichain:d}' if ichain is not None else ''
     return fits_dir / f'{_str_from_options}-{_hash}{extra}' / f'{kind}{ichain}.{ext}'

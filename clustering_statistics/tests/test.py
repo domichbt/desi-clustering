@@ -17,6 +17,9 @@ from clustering_statistics import tools, setup_logging, compute_stats_from_optio
 
 
 def test_stats_fn(stats=['mesh2_spectrum']):
+    catalog_options = {'imock': '*', 'weight': 'default-FKP', 'version': 'abacus-2ndgen-complete', 'tracer': ('LRG', 'ELG_LOP'), 'zrange': ((0.8, 1.1), (0.8, 1.1)), 'region': 'GCcomb', 'stats_dir': '/dvs_ro/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe'}
+    fn = tools.get_stats_fn(kind='mesh2_spectrum', **catalog_options)
+
     catalog_options = dict(version='holi-v1-altmtl', tracer='LRG', zrange=(0.4, 0.5), region='NGC', weight='default-FKP', imock=451)
     for stat in stats:
         for kw in [{'auw': True}, {'cut': True}]:

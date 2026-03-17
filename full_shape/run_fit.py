@@ -11,7 +11,7 @@ from clustering_statistics import tools as clustering_tools
 def run_fit_from_options(actions,
                          get_stats_fn=clustering_tools.get_stats_fn,
                          get_fits_fn=tools.get_fits_fn,
-                         cache_dir:str | Path=None, **kwargs):
+                         cache_dir:str | Path=None, cache_mode: str='rw', **kwargs):
     """
     Build a likelihood from options and run fitting actions (profile / sample).
 
@@ -30,6 +30,8 @@ def run_fit_from_options(actions,
         Function that constructs file paths for fit outputs (used to name saved chains/profiles).
     cache_dir : str or pathlib.Path, optional
         Directory used for caching emulators and precomputed products.
+    cache_mode : str, optional
+        'rw' for read/write; 'r' for read-only.
     **kwargs :
         Top-level options dictionary consumed by fill_fiducial_options. Must include
         a 'likelihoods' entry; may include sampler/profiler configuration and init/run kwargs.
@@ -38,10 +40,11 @@ def run_fit_from_options(actions,
     if isinstance(actions, str):
         actions = [actions]
     options = fill_fiducial_options(kwargs)
-    likelihoods_options = options['likelihoods']
-    likelihood = get_likelihood(likelihoods_options, get_stats_fn=get_stats_fn, cache_dir=cache_dir)
+    likelihood = get_likelihood(likelihoods_options=options['likelihoods'],
+                                cosmology_options=options['cosmology'],
+                                get_stats_fn=get_stats_fn, cache_dir=cache_dir)
     likelihood()
-    fn = get_fits_fn(kind='config', likelihoods=likelihoods_options, ext='yaml')
+    fn = get_fits_fn(kind='config', **options, ext='yaml')
     tools.write_options(fn, options)
     for action in actions:
         if action == 'build':
@@ -49,21 +52,20 @@ def run_fit_from_options(actions,
         elif action == 'sample':
             sampler_options = dict(options['sampler'])
             cls = tools.get_sampler_cls(sampler_options.pop('sampler', 'emcee'))
-            save_fn = [get_fits_fn(kind='chain', likelihoods=likelihoods_options, ichain=ichain)\
+            save_fn = [get_fits_fn(kind='chain', **options, ichain=ichain)\
                        for ichain in range(sampler_options['nchains'])]
             sampler = cls(likelihood, **sampler_options['init'], save_fn=save_fn)
             sampler.run(**sampler_options['run'])
         elif action == 'profile':
             profiler_options = dict(options['profiler'])
             cls = tools.get_profiler_cls(profiler_options.pop('profiler', 'minuit'))
-            save_fn = get_fits_fn(kind='profiles', likelihoods=likelihoods_options)
+            save_fn = get_fits_fn(kind='profiles', **options)
             profiler = cls(likelihood, **profiler_options['init'], save_fn=save_fn)
             profiler.maximize(**profiler_options['maximize'])
             if profiler.mpicomm.rank == 0:
                 print(profiler.profiles.to_stats(tablefmt='pretty'))
         else:
             raise NotImplementedError(f'{action} not implemented')
-        
 
 
 
