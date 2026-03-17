@@ -931,9 +931,7 @@ def run_preliminary_fit_mesh2_spectrum(data: types.Mesh2SpectrumPoles, window: t
 
     template = FixedPowerSpectrumTemplate(fiducial='DESI', z=z)
     theory = Theory(template=template)
-    observable = TracerPowerSpectrumMultipolesObservable(data=data.value(concatenate=True), window=window.value(), ells=data.ells,
-                                                         k=[pole.coords('k') for pole in data], kin=window.theory.get(ells=0).coords('k'),
-                                                         ellsin=window.theory.ells, theory=theory)
+    observable = TracerPowerSpectrumMultipolesObservable(data=data, window=window, theory=theory)
     likelihood = ObservablesGaussianLikelihood(observable, covariance=covariance.value())
     for param in fixed:
         likelihood.all_params[param].update(fixed=True)

@@ -318,7 +318,7 @@ if __name__ == '__main__':
     setup_logging()
     jax.distributed.initialize()
 
-    test_window()
+    #test_window()
     #test_blinding()
     #test_covariance()
     #test_rotation()

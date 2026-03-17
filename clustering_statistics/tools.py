@@ -489,6 +489,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
 
     if 'png' in analysis:
         propose_fiducial['mesh2_spectrum'].update(norm={'cellsize': 20}, ells=(0, 2), optimal_weights=functools.partial(compute_fiducial_png_weights, tracer=tracers, p=[propose_p[tt] for tt in simple_tracers]))
+        propose_fiducial['mesh3_spectrum'].update(norm={'cellsize': 20.}, ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal', selection_weights={tracer: functools.partial(compute_fiducial_selection_weights, tracer=tracer) for tracer in tracers})
     else:
         propose_fiducial['mesh2_spectrum'].update(norm={'cellsize': 10.}, ells=(0, 2, 4))
         propose_fiducial['mesh3_spectrum'].update(norm={'cellsize': 10.}, ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal', selection_weights={tracer: functools.partial(compute_fiducial_selection_weights, tracer=tracer) for tracer in tracers})
@@ -508,9 +509,13 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     for name in ['window_mesh2_spectrum', 'window_mesh3_spectrum', 'covariance_mesh2_spectrum']:
         propose_fiducial[name] = {}
 
-    propose_meshsizes = {'BGS': 864, 'LRG': 864, 'ELG': 1080, 'LRG+ELG': 864, 'QSO': 1152}
-    # very stable with nran, cellsize and boxsize
-    propose_fiducial['covariance_mesh2_spectrum']['mattrs'] = {'meshsize': propose_meshsizes[simple_tracers[0]], 'cellsize': 10., 'primes': primes, 'divisors': divisors}
+    if 'png' in analysis:
+        # very stable with nran, cellsize and boxsize
+        propose_fiducial['covariance_mesh2_spectrum']['mattrs'] = {'meshsize': 750, 'cellsize': 20.}
+    else:
+        propose_meshsizes = {'BGS': 864, 'LRG': 864, 'ELG': 1080, 'LRG+ELG': 864, 'QSO': 1152}
+        # very stable with nran, cellsize and boxsize
+        propose_fiducial['covariance_mesh2_spectrum']['mattrs'] = {'meshsize': propose_meshsizes[simple_tracers[0]], 'cellsize': 10.}
     propose_fiducial['window_mesh3_spectrum']['buffer_size'] = {'BGS': 3, 'LRG': 3, 'ELG': 0, 'LRG+ELG': 3, 'QSO': 0}[simple_tracers[0]]
     propose_fiducial['rotation_mesh2_spectrum'] = {'select': {'k': slice(0, None, 5)}}
     if "window_mesh2_spectrum_fm" in kind:
@@ -700,6 +705,7 @@ def fill_fiducial_options(kwargs, analysis='full_shape'):
             fiducial_options = propose_fiducial(stat, tracer=tracers, analysis=analysis)
             options[stat] = fiducial_options | spectrum_options | options.get(stat, {})
         options['window_mesh2_spectrum'].setdefault('zeff', options['mesh2_spectrum'].get('norm', {}))
+        options['window_mesh3_spectrum'].setdefault('zeff', options['mesh3_spectrum'].get('norm', {}))
         for stat in ['covariance_mesh2_spectrum']:
             spectrum_options = options[stat.replace('covariance_', '')]
             spectrum_options = {key: value for key, value in spectrum_options.items() if key in ['mattrs']}
