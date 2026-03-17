@@ -66,7 +66,7 @@ def compute_mesh3_spectrum(*get_data_randoms, mattrs=None,
 
         # Computing normalization
         all_fkp = [FKPField(particles['data'], particles['randoms']) for particles in all_particles]
-        norm = compute_fkp3_normalization(*all_fkp, bin=bin, split=[(42, fkp.randoms.__dict__['IDS']) for fkp in all_fkp],  # index for process invariance
+        norm = compute_fkp3_normalization(*all_fkp, bin=bin, split=[(42, fkp.randoms.extra['IDS']) for fkp in all_fkp],  # index for process invariance
                                           cellsize=10)
 
         # Computing shot noise
@@ -173,7 +173,7 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=Non
 
         fields = list(range(len(all_randoms)))
         fields += [fields[-1]] * (3 - len(all_randoms))
-        seed = [(42, randoms.__dict__['IDS']) for randoms in all_randoms]
+        seed = [(42, randoms.extra['IDS']) for randoms in all_randoms]
         zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=3, split=seed, return_fraction=True)
 
         correlations = []
