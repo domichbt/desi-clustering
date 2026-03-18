@@ -21,3 +21,4 @@ doc/_build/
 
 # Unit test / coverage reports
 **/.coverage
+**/slurm*

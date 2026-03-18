@@ -18,6 +18,7 @@ def get_means_covs(kind, versions, tracer, zrange, region, stats_dir, rebin=1):
             kw['basis'] = 'sugiyama-diagonal'
             kw['auw'] = False
         fns = tools.get_stats_fn(kind=kind, stats_dir=stats_dir, zrange=zrange, region=region, **kw, imock='*')
+        # print(fns)
         stats = list(map(types.read, fns))
         means[version] = types.mean(stats).select(k=slice(0, None, rebin))
         if len(stats) > 1:
@@ -28,7 +29,7 @@ def get_means_covs(kind, versions, tracer, zrange, region, stats_dir, rebin=1):
 
 
 def plot_stats(kind, versions, tracer, zrange, region, stats_dir, ells=(0,2,4), rebin=1, reference=None, ylim=(-1.5, 1.5),
-               figure=None, ax_col=0, linestyles=None, colors=None, scaling='kpk', save_fn=None):
+               figure=None, ax_col=0, linestyles=None, colors=None, scaling='kpk', save_fn=None, title=None):
     if reference is None:
         # use first item from versions as reference
         reference = next(iter(versions))
@@ -46,7 +47,10 @@ def plot_stats(kind, versions, tracer, zrange, region, stats_dir, ells=(0,2,4), 
     if 'mesh2_spectrum' in kind:
         means, covs = get_means_covs(kind, versions, tracer, zrange, region, stats_dir, rebin=rebin)
         versions = list(means)
-        lax[0].set_title(f'{tracer} in {region} {zrange[0]:.1f} < z < {zrange[1]:.1f}')
+        if title is None:
+            lax[0].set_title(f'{tracer} in {region} {zrange[0]:.1f} < z < {zrange[1]:.1f}')
+        else:
+            lax[0].set_title(title)
         for ill, ell in enumerate(ells):
             ax = lax[2 * ill]
             if scaling == 'kpk':
@@ -76,7 +80,10 @@ def plot_stats(kind, versions, tracer, zrange, region, stats_dir, ells=(0,2,4), 
     elif 'mesh3_spectrum_sugiyama-diagonal' in kind:
         means, covs = get_means_covs(kind, versions, tracer, zrange, region, stats_dir, rebin=rebin)
         versions = list(means)
-        lax[0].set_title(f'{tracer} in {zrange[0]:.1f} < z < {zrange[1]:.1f}')
+        if title is None:
+            lax[0].set_title(f'{tracer} in {zrange[0]:.1f} < z < {zrange[1]:.1f}')
+        else:
+            lax[0].set_title(title)
         for ill, ell in enumerate(ells):
             ax = lax[2 * ill]
             if scaling == 'kpk':
