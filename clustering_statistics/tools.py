@@ -722,6 +722,20 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             ext = 'fits' if 'full' in kind else 'h5'
             if kind == 'forfa_data':
                 return base_dir / f'forFA{imock:d}.fits'
+        elif version == 'holi-v3-complete':
+            cat_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/holi_v3/altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
+            ext = 'h5' if 'full' in kind else 'h5'
+            if kind == 'data':
+                return cat_dir / f'{tracer}_complete_{region}_clustering.dat.{ext}'
+            if kind == 'randoms':
+                return [cat_dir / f'{tracer}_complete_{region}_{iran:d}_clustering.ran.{ext}' for iran in range(nran)]
+
+        elif version == 'holi-v3-altmtl':
+            base_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/holi_v3'
+            cat_dir = base_dir / f'altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
+            ext = 'h5' if 'full' in kind else 'h5'
+            if kind == 'forfa_data':
+                return base_dir / f'forFA{imock:d}.fits'
  
         elif version == 'glam-uchuu-v1-altmtl':
             base_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/GLAM-Uchuu_v1'
@@ -753,16 +767,20 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
         
         elif 'uchuu-hf' in version:
             if 'altmtl' in version:
-                # Do not exist anymore?
-                cat_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/altmtl/')
+                #base_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/altmtl/')
+                cat_dir = Path("/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/Uchuu-SHAM/altmtl0/loa-v1/mock0/LSScats/")
+            elif 'complete' in version:
+                #base_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/altmtl/')
+                cat_dir = Path("/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/Uchuu-SHAM/altmtl0/loa-v1/mock0/LSScats/")
             else:
-                cat_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/complete/')
-            ext = 'fits'
-            if kind == 'data':
-                return Path(cat_dir / f'Uchuu-SHAM_{get_simple_tracer(tracer)}_Y3-v2.0_0000_clustering.dat.{ext}')
-            if kind == 'randoms':
-                return [cat_dir / f'Uchuu-SHAM_{get_simple_tracer(tracer)}_Y3-v2.0_0000_{iran}_clustering.ran.{ext}' for iran in range(nran)]
+                base_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/complete/')
+                if kind == 'data':
+                    return Path(base_dir / f'Uchuu-SHAM_{tracer.upper()}_Y3-v2.0_0000_clustering.dat.fits')
+                if kind == 'randoms':
+                    return [base_dir / f'Uchuu-SHAM_{tracer.upper()}_Y3-v2.0_0000_{iran}_clustering.ran.fits' for iran in range(nran)]
 
+
+    print(version)
     if cat_dir is None:
         raise ValueError('provide either cat_dir or version')
 

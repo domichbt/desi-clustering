@@ -11,8 +11,9 @@ from pathlib import Path
 
 import numpy as np
 from desipipe import Queue, Environment, TaskManager, spawn, setup_logging
-
 from clustering_statistics import tools
+import clustering_statistics
+print(clustering_statistics.__file__, flush = True)
 
 setup_logging()
 
@@ -37,6 +38,7 @@ def run_stats(tracer='LRG', version='holi-v1-altmtl', weight='default-FKP', imoc
     cache = {}
     zranges = tools.propose_fiducial('zranges', tracer)[-1:]
     for imock in imocks:
+        
         regions = ['NGC', 'SGC']
         for region in regions:
             options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight, imock=imock), mesh2_spectrum={'cut': True, 'auw': True if 'altmtl' in version else None})
@@ -48,16 +50,22 @@ def run_stats(tracer='LRG', version='holi-v1-altmtl', weight='default-FKP', imoc
             combine_stats_from_options(stats, region_comb, regions, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), **options)
     #jax.distributed.shutdown()
 
+def get_measurement_fn(kind='mesh2_spectrum_poles', version='abacus-2ndgen-complete', tracer='LRG', region='NGC', zrange=(0.8, 1.1), imock=0, **kwargs):
+    if imock is None:
+        import glob
+        return sorted(glob.glob(get_measurement_fn(kind=kind, version=version, tracer=tracer, region=region, zrange=zrange, imock='*')))
+    elif isinstance(imock, list):
+        return [f'/global/cfs/projectdirs/desi/mocks/cai/mock-benchmark-dr2/summary_statistics/cutsky/{version}/{kind}_{tracer}_z{zrange[0]:.1f}-{zrange[1]:.1f}_{region}_{im}.h5' for im in imock]
+    return f'/global/cfs/projectdirs/desi/mocks/cai/mock-benchmark-dr2/summary_statistics/cutsky/{version}/{kind}_{tracer}_z{zrange[0]:.1f}-{zrange[1]:.1f}_{region}_{imock}.h5'
 
 if __name__ == '__main__':
 
-    imocks = 0 + np.arange(20)
+    imocks = [0]
 
-    #stats_dir = Path(os.getenv('SCRATCH')) / 'holi_mocks_validation'
     stats_dir = Path("/global/cfs/projectdirs/desi/mocks/cai/mock-benchmark-dr2/summary_statistics/cutsky/")
 
-    for tracer in ['LRG']:
+    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO']:
         #for weight in ['default_compntile', 'default']:
-        #    run_stats(tracer, version='holi-v3-complete', weight=weight, imocks=imocks, stats_dir=stats_dir)
+        #    run_stats(tracer, version='uchuu-hf-complete', weight=weight, imocks=imocks, stats_dir=stats_dir)
         weight = 'default'
-        run_stats(tracer, version='holi-v3-altmtl', weight=weight, imocks=imocks, stats_dir=stats_dir)
+        run_stats(tracer, version='uchuu-hf-altmtl', weight=weight, imocks=imocks, stats_dir=stats_dir)
