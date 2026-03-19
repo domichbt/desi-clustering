@@ -35,7 +35,7 @@ tmw = tm.clone(scheduler=dict(max_workers=1), provider=dict(provider='nersc', ti
                 mpiprocs_per_worker=2250, nodes_per_worker=25, output=output, error=error, stop_after=1, constraint='cpu'))
 
 
-def run_stats(tracer='LRG', version='abacus-2ndgen-complete', complete=False, imocks=[0], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], ibatch=None, **kwargs):
+def run_stats(tracer='LRG', version='abacus-2ndgen-complete', onthefly=None, imocks=[0], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], ibatch=None, **kwargs):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
     import os
@@ -57,17 +57,19 @@ def run_stats(tracer='LRG', version='abacus-2ndgen-complete', complete=False, im
     for imock in imocks:
         regions = ['NGC', 'SGC']
         for region in regions:
-            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
-            if complete:
+            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True if 'altmtl' in version and onthefly is None else None}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
+            if onthefly == 'complete':
                 options['catalog']['complete'] = {}
                 get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete')
-            else:
-                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
+            elif onthefly == 'reshuffle':
                 options['catalog']['reshuffle'] = {'merged_data_fn': tools.get_catalog_fn(kind='data', **(options['catalog'] | dict(region='ALL')))}
                 get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='reshuffle')
+            else:
+                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
             options = fill_fiducial_options(options)
-            for tracer in options['catalog']:
-                options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran']), 'from_data': ['Z', 'WEIGHT_SYS', 'FRAC_TLOBS_TILES']}
+            if True: #onthefly:
+                for tracer in options['catalog']:
+                    options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran']), 'from_data': ['Z', 'WEIGHT_SYS', 'FRAC_TLOBS_TILES']}
             compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
 
 
@@ -87,19 +89,21 @@ if __name__ == '__main__':
     mode = 'interactive'
     #mode = 'slurm'
     stats, postprocess = [], []
-    #stats = ['mesh2_spectrum'] # 'mesh3_spectrum']
+    stats = ['mesh2_spectrum'] # 'mesh3_spectrum']
     #stats = ['mesh3_spectrum']
     #stats = ['window_mesh2_spectrum']
     #stats = ['covariance_mesh2_spectrum']
     #stats = ['window_mesh3_spectrum']
-    postprocess = ['combine_regions']
+    #postprocess = ['combine_regions']
     #postprocess = ['rotation_mesh2_spectrum']
     imocks = np.arange(3)
 
     stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
     #version = 'abacus-2ndgen-complete'
     version = 'abacus-2ndgen-altmtl'
-    complete = False
+    onthefly = 'reshuffle'
+    #onthefly = 'complete'
+    onthefly = None
 
     for tracer in ['BGS', 'LRG', 'ELG', 'QSO'][1:]:
         tracer = tools.get_full_tracer(tracer, version=version)
@@ -126,16 +130,16 @@ if __name__ == '__main__':
             nbatches = 1
             tasks = []
             for ibatch in range(nbatches):
-                task = get_run_stats()(tracer, version=version, complete=complete, imocks=_imocks, stats_dir=stats_dir, stats=stats, ibatch=(ibatch, nbatches))
+                task = get_run_stats()(tracer, version=version, onthefly=onthefly, imocks=_imocks, stats_dir=stats_dir, stats=stats, ibatch=(ibatch, nbatches))
                 tasks.append(task)
             if nbatches >= 1:
                 # Add dependence on other tasks
-                get_run_stats()(tracer, version=version, complete=complete, imocks=_imocks, stats_dir=stats_dir, stats=stats, ibatch=nbatches, tasks=tasks)
+                get_run_stats()(tracer, version=version, onthefly=onthefly, imocks=_imocks, stats_dir=stats_dir, stats=stats, ibatch=nbatches, tasks=tasks)
         elif any('covariance' in stat for stat in stats):
-            get_run_stats()(tracer, version=version, complete=complete, imocks=[0], stats_dir=stats_dir, stats=stats)
+            get_run_stats()(tracer, version=version, onthefly=onthefly, imocks=[0], stats_dir=stats_dir, stats=stats)
         elif stats:
             batch_imocks = np.array_split(imocks, max(len(imocks) // 10, 1)) if len(imocks) else []
             for _imocks in batch_imocks:
-                get_run_stats()(tracer, version=version, complete=complete, imocks=_imocks, stats_dir=stats_dir, stats=stats)
+                get_run_stats()(tracer, version=version, onthefly=onthefly, imocks=_imocks, stats_dir=stats_dir, stats=stats)
         if postprocess:
-            postprocess_stats(tracer, version=version, complete=complete, imocks=imocks, stats_dir=stats_dir, postprocess=postprocess)
+            postprocess_stats(tracer, version=version, onthefly=onthefly, imocks=imocks, stats_dir=stats_dir, postprocess=postprocess)
