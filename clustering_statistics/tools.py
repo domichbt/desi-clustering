@@ -19,6 +19,7 @@ logger = logging.getLogger('tools')
 
 
 desi_dir = Path('/dvs_ro/cfs/cdirs/desi/')
+base_stats_dir = Path('/global/cfs/cdirs/desi/science/cai/desi-clustering/dr2/summary_statistics/')
 # These are region splits that require loading NGC+SGC
 special_regions = ['S', 'ALL', 'SnoDES', 'noDES', 'ACT_DR6', 'PLANCK_PR4'] + [f'GAL0{i}' for i in [20, 40, 60, 70, 80, 90, 97, 99]]
 
@@ -906,7 +907,7 @@ def float2str(value, prec_min=1, prec_max=10):
     return s
 
 
-def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', kind='mesh2_spectrum', auw=None, cut=None, extra='', ext='h5', **kwargs):
+def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', project='', kind='mesh2_spectrum', auw=None, cut=None, extra='', ext='h5', **kwargs):
     """
     Return measurement filename for given parameters.
 
@@ -914,6 +915,8 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', kin
     ----------
     stats_dir : str, Path
         Directory containing the measurements.
+    project : str
+        KP analysis to which the measurement corresponds. For example: 'full_shape/base', 'local_png/base', 'bao/base', etc.
     version : str, optional
         Measurement version.
     kind : str
@@ -972,6 +975,7 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', kin
         assert all(item is not None for item in items), f'provide {key}'
         return items
 
+    stats_dir = stats_dir / project
     version = join_if_not_none(str, 'version')
     if version: stats_dir = stats_dir / version
     tracer = join_tracers(check_is_not_none('tracer'))
