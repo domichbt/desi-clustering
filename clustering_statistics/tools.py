@@ -165,8 +165,7 @@ def get_galactic_mask(ra, dec, galactic_fraction_percent='GAL040'):
     from astropy.coordinates import SkyCoord
     import astropy.units as u
     # Path to Planck Galactic plane mask
-    # TODO: Move file to a CAI directory
-    mask_path = Path('/pscratch/sd/a/arosado/auxiliary/') / 'HFI_Mask_GalPlane-apo0_2048_R2.00.fits'
+    mask_path = base_stats_dir / 'auxiliary_data' / 'HFI_Mask_GalPlane-apo0_2048_R2.00.fits'
     galactic_mask = Catalog.read(mask_path)
 
     # Read mask and determine ordering from FITS header
