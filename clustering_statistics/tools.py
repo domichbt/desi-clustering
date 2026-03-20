@@ -837,6 +837,7 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             ext = 'fits' if 'full' in kind else 'h5'
             if kind == 'forfa_data':
                 return base_dir / f'forFA{imock:d}.fits'
+
         elif version == 'holi-v3-complete':
             cat_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/holi_v3/altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
             ext = 'h5' if 'full' in kind else 'h5'
