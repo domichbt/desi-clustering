@@ -35,7 +35,7 @@ tm80 = tm.clone(provider=dict(provider='nersc', time='02:00:00',
                             mpiprocs_per_worker=4, output=output, error=error, stop_after=1, constraint='gpu&hbm80g'))
 
 
-def run_stats(tracer='LRG', version='holi-v1-altmtl', complete=False, imocks=[201], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], ibatch=None, **kwargs):
+def run_stats(tracer='LRG', version='holi-v1-altmtl', imocks=[201], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], ibatch=None, **kwargs):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
     import os
@@ -58,27 +58,17 @@ def run_stats(tracer='LRG', version='holi-v1-altmtl', complete=False, imocks=[20
         regions = ['NGC', 'SGC']
         for region in regions:
             options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
-            if complete:
-                options['catalog']['complete'] = {}
-                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete')
-            else:
-                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
-            #    options['catalog']['reshuffle'] = {'merged_data_fn': tools.get_catalog_fn(kind='data', **(options['catalog'] | dict(region='ALL')))}
-            #    get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='reshuffle')
             options = fill_fiducial_options(options)
             #for tracer in options['catalog']:
             #    options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran'])}
             compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
 
 
-def postprocess_stats(tracer='LRG', version='holi-v1-altmtl', complete=False, imocks=[201], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', postprocess=['combine_regions'], **kwargs):
+def postprocess_stats(tracer='LRG', version='holi-v1-altmtl', imocks=[201], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', postprocess=['combine_regions'], **kwargs):
     from clustering_statistics import postprocess_stats_from_options
     zranges = tools.propose_fiducial('zranges', tracer)
     options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, imock=imocks[0]), imocks=imocks, combine_regions={'stats': ['mesh2_spectrum', 'mesh3_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum', 'window_mesh3_spectrum'][2:4]}, mesh2_spectrum={'cut': True}, window_mesh2_spectrum={'cut': True})
-    if complete:
-        get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete')
-    else:
-        get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
+    get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
     postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **options)
 
 
@@ -89,19 +79,20 @@ if __name__ == '__main__':
     #mode = 'slurm'
     stats, postprocess = [], []
     #stats = ['mesh2_spectrum', 'mesh3_spectrum']
+    stats = ['mesh2_spectrum']
     #stats = ['mesh3_spectrum']
     #stats = ['window_mesh2_spectrum']
     #stats = ['covariance_mesh2_spectrum']
     #stats = ['window_mesh3_spectrum']
-    postprocess = ['combine_regions']
+    #postprocess = ['combine_regions']
     #postprocess = ['rotation_mesh2_spectrum']
     imocks = np.arange(1001)
-    imocks = [201]
+    imocks = [266]
 
     stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
     version = 'holi-v1-altmtl'
 
-    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO']:
+    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO'][-1:]:
         if False:
             exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=list(range(1001)))[:2]
             imocks = exists[1]['imock']
