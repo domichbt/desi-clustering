@@ -56,7 +56,7 @@ def compute_reconstruction(get_data_randoms, mattrs=None, mode='recsym', bias=2.
         assert mode in ['recsym', 'reciso']
         # RecSym = remove large scale RSD from randoms
         kwargs = {}
-        if mode == 'recsym': kwargs['field'] = 'disp'
+        if mode == 'reciso': kwargs['field'] = 'disp'
         randoms_positions_rec = recon.read_shifted_positions(fkp.randoms.positions, **kwargs)
         if jax.process_index() == 0:
             logger.info('Reconstruction finished.')
@@ -121,7 +121,7 @@ def compute_box_reconstruction(get_data, mattrs=None, mode='recsym', zsnap=None,
         assert mode in ['recsym', 'reciso']
         # RecSym = remove large scale RSD from randoms
         kwargs = {}
-        if mode == 'recsym': kwargs['field'] = 'disp'
+        if mode == 'reciso': kwargs['field'] = 'disp'
         randoms_positions_rec = recon.read_shifted_positions(randoms.positions, **kwargs)
         if jax.process_index() == 0:
             logger.info('Reconstruction finished.')

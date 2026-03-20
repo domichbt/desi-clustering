@@ -15,7 +15,7 @@ logger = logging.getLogger('spectrum3')
 
 def compute_mesh3_spectrum(*get_data_randoms, mattrs=None,
                             basis='sugiyama-diagonal', ells=[(0, 0, 0), (2, 0, 2)], edges=None, los='local',
-                            buffer_size=0, cache=None):
+                            buffer_size=0, norm: dict=None, cache=None):
     r"""
     Compute the 3-point spectrum multipoles using mesh-based FKP fields with :mod:`jaxpower`.
 
@@ -39,6 +39,9 @@ def compute_mesh3_spectrum(*get_data_randoms, mattrs=None,
         Line-of-sight definition. 'local' uses local LOS, 'x', 'y', 'z' use fixed axes, or provide a 3-vector.
     buffer_size : int, optional
         Buffer size when binning; if the binning is multidimensional, increase for faster computation at the cost of memory.
+    norm : dict, optional
+        Optional arguments for computing normalization.
+        Default is ``{'cellsize': 10.}`` (density computed with ``cellsize = 10.``)
     cache : dict, optional
         Cache to store binning class (can be reused if ``meshsize`` and ``boxsize`` are the same).
         If ``None``, a new cache is created.
@@ -58,16 +61,18 @@ def compute_mesh3_spectrum(*get_data_randoms, mattrs=None,
         mattrs = all_particles[0]['data'].attrs
         # Define the binner
         if cache is None: cache = {}
-        bin = cache.get(f'bin_mesh3_spectrum_{basis}', None)
         if edges is None: edges = {'step': 0.02 if 'scoccimarro' in basis else 0.005}
+        if norm is None: norm = {'cellsize': 10.}
+        kw_norm = dict(norm)
+        bin = cache.get(f'bin_mesh3_spectrum_{basis}', None)
         if bin is None or not np.all(bin.mattrs.meshsize == mattrs.meshsize) or not np.allclose(bin.mattrs.boxsize, mattrs.boxsize):
             bin = BinMesh3SpectrumPoles(mattrs, edges=edges, basis=basis, ells=ells, buffer_size=buffer_size)
         cache.setdefault(f'bin_mesh3_spectrum_{basis}', bin)
 
         # Computing normalization
         all_fkp = [FKPField(particles['data'], particles['randoms']) for particles in all_particles]
-        norm = compute_fkp3_normalization(*all_fkp, bin=bin, split=[(42, fkp.randoms.__dict__['IDS']) for fkp in all_fkp],  # index for process invariance
-                                          cellsize=10)
+        norm = compute_fkp3_normalization(*all_fkp, bin=bin, split=[(42, fkp.randoms.extra['IDS']) for fkp in all_fkp],  # index for process invariance
+                                          **kw_norm)
 
         # Computing shot noise
         all_fkp = [FKPField(particles['data'], particles['shifted'] if particles.get('shifted', None) is not None else particles['randoms']) for particles in all_particles]
@@ -100,7 +105,7 @@ def compute_mesh3_spectrum(*get_data_randoms, mattrs=None,
 
 def _get_window_edges(mattrs, scales: tuple=(1, 4)):
     """Return window edges."""
-    distmax, cellmin = np.sqrt(np.sum(mattrs.boxsize**2)), mattrs.cellsize.min()
+    distmax, cellmin = mattrs.boxsize.min() / 4., mattrs.cellsize.min()
     nsizes, cellsizes = [6] * 5 + [None], [cellmin * 2**i for i in range(6)]
     edges = []
     for scale in scales:
@@ -109,19 +114,19 @@ def _get_window_edges(mattrs, scales: tuple=(1, 4)):
         for nsize, cellsize in zip(nsizes, cellsizes):
             cellsize = cellsize * scale
             if nsize is None:
-                tmp = np.arange(start, distmax * scale / scales[-1] + cellsize, cellsize)
+                tmp = np.arange(start, distmax * scale / scales[0] + cellsize, cellsize)
             else:
                 tmp = start + np.arange(nsize) * cellsize
             if tmp.size:
                 start = tmp[-1] + cellsize
                 edges_scale.append(tmp)
         edges_scale = np.concatenate(edges_scale, axis=0)
-        edges_scale = edges_scale[edges_scale < distmax + cellsize]
+        edges_scale = edges_scale[edges_scale < distmax * scale / scales[0] + cellsize]
         edges.append(edges_scale)
     return edges
 
 
-def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=None, computed_batches: list=None, buffer_size=0):
+def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, zeff: dict=None, ibatch: tuple=None, computed_batches: list=None, buffer_size=0):
     r"""
     Compute the 3-point spectrum window with :mod:`jaxpower`.
 
@@ -132,6 +137,9 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=Non
         See :func:`prepare_jaxpower_particles` for details.
     spectrum : Mesh3SpectrumPoles
         Measured 3-point spectrum multipoles.
+    zeff : dict, optional
+        Optional arguments for computing effective redshift.
+        Default is ``{'cellsize': 10.}`` (density computed with ``cellsize = 10.``)
     ibatch : tuple, optional
         To split the window function multipoles to compute in batches, provide (0, nbatches) for the first batch,
         (1, nbatches) for the second, etc; up to (nbatches - 1, nbatches).
@@ -152,6 +160,8 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=Non
     #mattrs['meshsize'] = 256
     los = spectrum.attrs['los']
     kw_paint = dict(resampler='tsc', interlacing=3, compensate=True)
+    if zeff is None: zeff = {'cellsize': 10.}
+    kw_zeff = dict(zeff)
 
     with create_sharding_mesh(meshsize=mattrs.get('meshsize', None)):
         all_particles = prepare_jaxpower_particles(*get_data_randoms, mattrs=mattrs, add_randoms=['IDS'])
@@ -173,8 +183,8 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=Non
 
         fields = list(range(len(all_randoms)))
         fields += [fields[-1]] * (3 - len(all_randoms))
-        seed = [(42, randoms.__dict__['IDS']) for randoms in all_randoms]
-        zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=3, split=seed, return_fraction=True)
+        seed = [(42, randoms.extra['IDS']) for randoms in all_randoms]
+        zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=3, split=seed, return_fraction=True, **kw_zeff)
 
         correlations = []
         kw, ellsin = get_smooth3_window_bin_attrs(ells, ellsin=2, fields=fields, return_ellsin=True)
@@ -195,14 +205,14 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=Non
             # multigrid calculation
             kw_paint = dict(resampler='tsc', interlacing=3, compensate=True)
             for scale, edges in zip(list_scales, list_edges):
-                if jax.process_index() == 0:
-                    logger.info(f'Processing scale x{scale:.0f}')
                 mattrs2 = mattrs.clone(boxsize=scale * mattrs.boxsize)
+                if jax.process_index() == 0:
+                    logger.info(f'Processing scale x{scale:.0f}, using {mattrs2}')
                 sbin = BinMesh3CorrelationPoles(mattrs2, edges=edges, **kw, buffer_size=buffer_size)  # kcut=(0., mattrs2.knyq.min()))
                 meshes = []
                 for iran, randoms in enumerate(split_particles(all_randoms + [None] * (3 - len(all_randoms)),
                                                                seed=seed, fields=fields)):
-                    randoms = randoms.exchange(backend='mpi')
+                    randoms = randoms.clone(attrs=mattrs2).exchange(backend='mpi')
                     alpha = pole.attrs['wsum_data'][0][min(iran, len(all_randoms) - 1)] / randoms.weights.sum()
                     meshes.append(alpha * randoms.paint(**kw_paint, out='real'))
                 t0 = time.time()
@@ -212,10 +222,13 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=Non
                 if jax.process_index() == 0:
                     logger.info(f"Computed windows {kw['ells']}, scale {scale}, in {time.time() - t0:.2f} s.")
                 correlation = interpolate_window_function(correlation.unravel(), coords=coords, order=3)
+                #if jax.process_index() == 0: correlation.write(f'_tests/window_correlation3_{scale:.0f}.h5')
                 correlations.append(correlation)
 
             coords = list(next(iter(correlations[0])).coords().values())
-            masks = [(coords[0] < edges[-1])[:, None] * (coords[1] < edges[-1])[None, :] for edges in list_edges[:-1]]
+            # -3 to make the connection smooth, independent of the edge
+            # for a cubic spline, 4 neighboring points are used
+            masks = [(coords[0] < edges[-3])[:, None] * (coords[1] < edges[-3])[None, :] for edges in list_edges[:-1]]
             masks.append((coords[0] < np.inf)[:, None] * (coords[1] < np.inf)[None, :])
             weights = []
             for mask in masks:

@@ -21,21 +21,23 @@ def propose_nran_boxsize_from_catalogs():
     zranges = [('BGS_BRIGHT-21.35', (0.1, 0.4)), ('LRG', (0.4, 1.1)), ('ELG_LOPnotqso', (0.8, 1.6)), ('QSO', (0.8, 2.1))][::-1]
     for tracer, zrange in zranges:
         for region in ['NGC', 'SGC'][:1]:
-            catalog_options = dict(version='data-dr2-v2', tracer=tracer, zrange=zrange, region=region)
+            catalog_options = dict(version='data-dr2-v2', tracer=tracer, zrange=zrange, region=region, weight='default')
             data = tools.read_clustering_catalog(kind='data', **catalog_options)
             _nran = 10
             randoms = tools.read_clustering_catalog(kind='randoms', nran=_nran, **catalog_options, concatenate=True)
             alpha = len(data) / (len(randoms) / _nran)
             nran = 50. * alpha
             mattrs = get_mesh_attrs(data['POSITION'], randoms['POSITION'], boxpad=1.2, cellsize=7.5, primes=(2, 3, 5), divisors=(2,))
+            mattrs2 = get_mesh_attrs(data['POSITION'], randoms['POSITION'], boxpad=1.8, cellsize=10., primes=(2, 3, 5), divisors=(2,))
             print(f'For {tracer} in {zrange[0]:.1f}-{zrange[1]:.1f}, {region}')
             print(f'nran = {nran:.1f}')
-            print(f'mattrs = {mattrs}')
+            print(f'mattrs1.2 = {mattrs}')
+            print(f'mattrs1.8 = {mattrs2}')
 
 
 def check_boxsize_spectrum(stats=['mesh2_spectrum']):
     """Run measurements with varying boxsize to check stability."""
-    stats_dir = Path(Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks')
+    stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
     boxsizes = {'LRG': [5000., 6000., 7000., 8000., 9000., 10000.],
                 'ELG_LOP': [6000., 7000., 8000., 9000., 10000.],
                 'QSO': [7000., 8000., 9000., 10000.]}
@@ -54,7 +56,7 @@ def check_boxsize_spectrum(stats=['mesh2_spectrum']):
 
 def check_nran_spectrum(stats=['mesh2_spectrum']):
     """Run measurements with varying number of randoms to check stability."""
-    stats_dir = Path(os.getenv('SCRATCH') / 'clustering-measurements-checks'
+    stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
     nrans = {'LRG': [8, 9, 11, 18],
              'ELG_LOP': [11, 13, 16, 18],
              'QSO': [8, 9, 11, 18]}

@@ -35,7 +35,7 @@ tm80 = tm.clone(provider=dict(provider='nersc', time='02:00:00',
                             mpiprocs_per_worker=4, output=output, error=error, stop_after=1, constraint='gpu&hbm80g'))
 
 
-def run_stats(tracer='LRG', version='holi-v1-altmtl', imocks=[451], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum']):
+def run_stats(tracer='LRG', version='holi-v1-altmtl', complete=False, imocks=[201], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], ibatch=None, **kwargs):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
     import os
@@ -49,34 +49,60 @@ def run_stats(tracer='LRG', version='holi-v1-altmtl', imocks=[451], stats_dir=Pa
     try: jax.distributed.initialize()
     except RuntimeError: print('Distributed environment already initialized')
     else: print('Initializing distributed environment')
-    from clustering_statistics import tools, setup_logging, compute_stats_from_options, combine_stats_from_options, fill_fiducial_options
-
+    from clustering_statistics import tools, setup_logging, compute_stats_from_options, fill_fiducial_options
     setup_logging()
+
     cache = {}
     zranges = tools.propose_fiducial('zranges', tracer)
     for imock in imocks:
         regions = ['NGC', 'SGC']
         for region in regions:
-            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True})
+            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
+            if complete:
+                options['catalog']['complete'] = {}
+                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete')
+            else:
+                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
+            #    options['catalog']['reshuffle'] = {'merged_data_fn': tools.get_catalog_fn(kind='data', **(options['catalog'] | dict(region='ALL')))}
+            #    get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='reshuffle')
             options = fill_fiducial_options(options)
-            compute_stats_from_options(stats, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), cache=cache, **options)
-        jax.experimental.multihost_utils.sync_global_devices('measurements')
-        for region_comb, regions in tools.possible_combine_regions(regions).items():
-            combine_stats_from_options(stats, region_comb, regions, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), **options)
-    #jax.distributed.shutdown()
+            #for tracer in options['catalog']:
+            #    options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran'])}
+            compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
+
+
+def postprocess_stats(tracer='LRG', version='holi-v1-altmtl', complete=False, imocks=[201], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', postprocess=['combine_regions'], **kwargs):
+    from clustering_statistics import postprocess_stats_from_options
+    zranges = tools.propose_fiducial('zranges', tracer)
+    options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, imock=imocks[0]), imocks=imocks, combine_regions={'stats': ['mesh2_spectrum', 'mesh3_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum', 'window_mesh3_spectrum'][2:4]}, mesh2_spectrum={'cut': True}, window_mesh2_spectrum={'cut': True})
+    if complete:
+        get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete')
+    else:
+        get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
+    postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **options)
+
 
 
 if __name__ == '__main__':
 
-    mode = 'slurm'
-    stats = ['mesh2_spectrum', 'mesh3_spectrum']
+    mode = 'interactive'
+    #mode = 'slurm'
+    stats, postprocess = [], []
+    #stats = ['mesh2_spectrum', 'mesh3_spectrum']
+    #stats = ['mesh3_spectrum']
+    #stats = ['window_mesh2_spectrum']
+    #stats = ['covariance_mesh2_spectrum']
+    #stats = ['window_mesh3_spectrum']
+    postprocess = ['combine_regions']
+    #postprocess = ['rotation_mesh2_spectrum']
     imocks = np.arange(1001)
+    imocks = [201]
 
     stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
     version = 'holi-v1-altmtl'
 
     for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO']:
-        if True:
+        if False:
             exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=list(range(1001)))[:2]
             imocks = exists[1]['imock']
             rerun = []
@@ -85,10 +111,30 @@ if __name__ == '__main__':
                     rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, kind=kind, stats_dir=stats_dir, tracer=tracer, region='GCcomb', weight='default-FKP', zrange=zrange, version=version), test_if_readable=True, imock=list(range(1001)))
                     rerun += [imock for imock in imocks if (imock in unreadable[1]['imock']) or (imock not in rexists[1]['imock'])]
             imocks = sorted(set(rerun))
-        batch_imocks = np.array_split(imocks, max(len(imocks) // 10, 1)) if len(imocks) else []
-        for _imocks in batch_imocks:
-            if mode == 'interactive':
-                run_stats(tracer, version=version, imocks=_imocks, stats_dir=stats_dir, stats=stats)
-            else:
-                _tm = tm if tracer in ['LRG'] else tm80
-                _tm.python_app(run_stats)(tracer, version=version, imocks=_imocks, stats_dir=stats_dir, stats=stats)
+
+        def get_run_stats():
+            _tm = tm80
+            if tracer in ['LRG']:
+                _tm = tm
+            if any('window_mesh3' in stat for stat in stats):
+                _tm = tmw
+            return run_stats if mode == 'interactive' else _tm.python_app(run_stats)
+
+        if any('window' in stat for stat in stats):
+            _imocks = [201]
+            nbatches = 1
+            tasks = []
+            for ibatch in range(nbatches):
+                task = get_run_stats()(tracer, version=version, imocks=_imocks, stats_dir=stats_dir, stats=stats, ibatch=(ibatch, nbatches))
+                tasks.append(task)
+            if nbatches >= 1:
+                # Add dependence on other tasks
+                get_run_stats()(tracer, version=version, imocks=_imocks, stats_dir=stats_dir, stats=stats, ibatch=nbatches, tasks=tasks)
+        elif any('covariance' in stat for stat in stats):
+            get_run_stats()(tracer, version=version, imocks=[201], stats_dir=stats_dir, stats=stats)
+        elif stats:
+            batch_imocks = np.array_split(imocks, max(len(imocks) // 10, 1)) if len(imocks) else []
+            for _imocks in batch_imocks:
+                get_run_stats()(tracer, version=version, imocks=_imocks, stats_dir=stats_dir, stats=stats)
+        if postprocess:
+            postprocess_stats(tracer, version=version, imocks=imocks, stats_dir=stats_dir, postprocess=postprocess)

@@ -53,7 +53,7 @@ def prepare_jaxpower_particles(*get_data_randoms, mattrs=None, add_data=tuple(),
     for catalogs in all_catalogs:
         particles = {}
         for name, catalog in catalogs.items():
-            _add = {}
+            extra = {}
             indweights = catalog['INDWEIGHT']
             if name == 'data':
                 bitweights = None
@@ -61,20 +61,16 @@ def prepare_jaxpower_particles(*get_data_randoms, mattrs=None, add_data=tuple(),
                     bitweights = _format_bitweights(catalog['BITWEIGHT'])
                     from cucount.jax import BitwiseWeight
                     iip = BitwiseWeight(weights=bitweights, p_correction_nbits=False)(bitweights)
-                    _add['BITWEIGHT'] = [indweights] + bitweights  # add individual weight (photometric, spectro systematics) without PIP
+                    extra['BITWEIGHT'] = [indweights] + bitweights  # add individual weight (photometric, spectro systematics) without PIP
                     indweights = indweights * iip  # multiply by IIP to correct fiber assignment at large scales
                 for column in add[name]:
-                    if column != 'BITWEIGHT': _add[column] = catalog[column]
+                    if column != 'BITWEIGHT': extra[column] = catalog[column]
             elif name == 'randoms':
                 if 'TARGETID' in catalog and 'IDS' in add[name]:
-                    _add['IDS'] = catalog['TARGETID']
+                    extra['IDS'] = catalog['TARGETID']
                 for column in add[name]:
-                    if column != 'IDS': _add[column] = catalog[column]
-            particle = ParticleField(catalog['POSITION'], indweights, attrs=mattrs, exchange=True, backend=backend, **kwargs)
-            for key, value in _add.items():
-                if isinstance(value, list): value = [particle.exchange_direct(value, pad=0) for value in value]
-                else: value = particle.exchange_direct(value, pad=0)
-                particle.__dict__[key] = value
+                    if column != 'IDS': extra[column] = catalog[column]
+            particle = ParticleField(catalog["POSITION"], indweights, attrs=mattrs, exchange=True, backend=backend, extra=extra, **kwargs)
             particles[name] = particle
         all_particles.append(particles)
     if jax.process_index() == 0:
@@ -94,7 +90,7 @@ def _get_jaxpower_attrs(*all_particles):
                 if f'wsum_{name}' not in attrs:
                     #attrs[f'size_{name}'] = [[]]  # size is process-dependent
                     attrs[f'wsum_{name}'] = [[]]
-               # attrs[f'size_{name}'][0].append(particles[name].size)
+                #attrs[f'size_{name}'][0].append(particles[name].size)
                 attrs[f'wsum_{name}'][0].append(particles[name].sum())
     for name in ['boxsize', 'boxcenter', 'meshsize']:
         attrs[name] = mattrs[name]
@@ -103,7 +99,7 @@ def _get_jaxpower_attrs(*all_particles):
 
 def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
                            ells=(0, 2, 4), edges=None, los='firstpoint', optimal_weights=None,
-                           cache=None):
+                           norm: dict=None, cache=None):
     r"""
     Compute the 2-point spectrum multipoles using mesh-based FKP fields with :mod:`jaxpower`.
 
@@ -134,6 +130,9 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
         As a default, ``optimal_weights.columns = ['Z']`` to indicate that redshift information is needed.
         A dictionary ``catalog`` of columns is provided, containing 'INDWEIGHT' and the requested columns.
         If ``None``, no optimal weights are applied.
+    norm : dict, optional
+        Optional arguments for computing normalization.
+        Default is ``{'cellsize': 10.}`` (density computed with ``cellsize = 10.``)
     cache : dict, optional
         Cache to store binning class (can be reused if ``meshsize`` and ``boxsize`` are the same).
         If ``None``, a new cache is created.
@@ -156,6 +155,8 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
 
         if cache is None: cache = {}
         if edges is None: edges = {'step': 0.001}
+        if norm is None: norm = {'cellsize': 10.}
+        kw_norm = dict(norm)
 
         def _compute_spectrum_ell(all_particles, ells, fields=None):
             # Compute power spectrum for input given multipoles
@@ -172,7 +173,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
 
             # Computing normalization
             all_fkp = [FKPField(particles['data'], particles['randoms']) for particles in all_particles]
-            norm = compute_fkp2_normalization(*all_fkp, bin=bin, cellsize=10)
+            norm = compute_fkp2_normalization(*all_fkp, bin=bin, **kw_norm)
 
             # Computing shot noise
             all_fkp = [FKPField(particles['data'], particles['shifted'] if particles.get('shifted', None) is not None else particles['randoms']) for particles in all_particles]
@@ -197,7 +198,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
                 results['cut'] = -close.value()
 
             # Then compute the AUW-weighted pairs
-            with_bitweights = 'BITWEIGHT' in all_fkp[0].data.__dict__
+            with_bitweights = 'BITWEIGHT' in all_fkp[0].data.extra
             if auw is not None or with_bitweights:
                 from cucount.jax import WeightAttrs
                 from jaxpower.particle2 import convert_particles
@@ -205,8 +206,8 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
                 bitwise = angular = None
                 if with_bitweights:
                     # Order of weights matters
-                    # fkp.data.__dict__['BITWEIGHT'] includes IIP in the first position
-                    all_data = [convert_particles(fkp.data, weights=list(fkp.data.__dict__['BITWEIGHT']) + [fkp.data.weights], exchange_weights=False) for fkp in all_fkp]
+                    # fkp.data.extra['BITWEIGHT'] includes IIP in the first position
+                    all_data = [convert_particles(fkp.data, weights=list(fkp.data.extra['BITWEIGHT']) + [fkp.data.weights], exchange_weights=False) for fkp in all_fkp]
                     bitwise = dict(weights=all_data[0].get('bitwise_weight'))  # sets nrealizations, etc.: fine to use the first
                     if jax.process_index() == 0:
                         logger.info(f'Applying PIP weights {bitwise}.')
@@ -266,7 +267,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
                     if all_particles[0] is None:  # shifted is None, yield None
                         while True:
                             yield tuple(None for particles in all_particles)
-                    for all_weights in optimal_weights(ell, [{'INDWEIGHT': particles.weights} | {column: particles.__dict__[column] for column in columns_optimal_weights} for particles in all_particles]):
+                    for all_weights in optimal_weights(ell, [{'INDWEIGHT': particles.weights} | {column: particles.extra[column] for column in columns_optimal_weights} for particles in all_particles]):
                         yield tuple(particles.clone(weights=weights) for particles, weights in zip(all_particles, all_weights))
 
                 result_ell = {}
@@ -293,7 +294,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
 
 
 def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2SpectrumPoles, optimal_weights: Callable=None, cut
-: bool=None):
+: bool=None, zeff: dict=None):
     r"""
     Compute the 2-point spectrum window with :mod:`jaxpower`.
 
@@ -310,6 +311,9 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
         As a default, ``optimal_weights.columns = ['Z']`` to indicate that redshift information is needed.
         A dictionary ``catalog`` of columns is provided, containing 'INDWEIGHT' and the requested columns.
         If ``None``, no optimal weights are applied.
+    zeff : dict, optional
+        Optional arguments for computing effective redshift.
+        Default is ``{'cellsize': 10.}`` (density computed with ``cellsize = 10.``)
 
     Returns
     -------
@@ -325,6 +329,8 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
     los = spectrum.attrs['los']
     ellsin = [0, 2, 4]
     kw_paint = dict(resampler='tsc', interlacing=3, compensate=True)
+    if zeff is None: zeff = {'cellsize': 10.}
+    kw_zeff = dict(zeff)
 
     columns_optimal_weights = []
     if optimal_weights is not None:
@@ -345,7 +351,7 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
 
         def _compute_window_ell(all_randoms, ells, isum=0, fields=None):
             all_randoms = list(all_randoms)
-            seed = [(42, randoms.__dict__['IDS']) for randoms in all_randoms]  # for process invariance
+            seed = [(42, randoms.extra["IDS"]) for randoms in all_randoms]  # for process invariance
             mattrs = all_randoms[0].attrs
             pole = spectrum.get(ells[0])
             bin = BinMesh2SpectrumPoles(mattrs, edges=pole.edges('k'), ells=ells)
@@ -360,19 +366,23 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
             list_edges = []
             for scale in [1, 4]:
                 mattrs2 = mattrs.clone(boxsize=scale * mattrs.boxsize)
+                if jax.process_index() == 0:
+                    logger.info(f'Processing scale x{scale:.0f}, using {mattrs2}')
                 all_mesh = []
                 for iran, randoms in enumerate(split_particles(all_randoms + [None] * (2 - len(all_randoms)), seed=seed, fields=fields)):
-                    randoms = randoms.exchange(backend='mpi')
+                    randoms = randoms.clone(attrs=mattrs2).exchange(backend='mpi')
                     alpha = pole.attrs['wsum_data'][isum][min(iran, len(all_randoms) - 1)] / randoms.weights.sum()
                     all_mesh.append(alpha * randoms.paint(**kw_paint, out='real'))
-                edges = np.arange(0., mattrs2.boxsize.min() / 2., mattrs2.cellsize.min())
+                distmax, cellsize = mattrs2.boxsize.min() / 4., mattrs2.cellsize.min()
+                edges = np.arange(0., distmax + cellsize, cellsize)
                 list_edges.append(edges)
                 sbin = BinMesh2CorrelationPoles(mattrs2, edges=edges, **kw_window, basis='bessel')
                 correlation = jitted_compute_mesh2_correlation(all_mesh, bin=sbin, los=los).clone(norm=[np.mean(norm)] * len(sbin.ells))
                 del all_mesh
+                #if jax.process_index() == 0: correlation.write(f'_tests/window_correlation2_{scale:.0f}.h5')
                 correlation = interpolate_window_function(correlation, coords=coords, order=3)
                 correlations.append(correlation)
-            masks = [coords < edges[-1] for edges in list_edges[:-1]]
+            masks = [coords < edges[-3] for edges in list_edges[:-1]]
             masks.append((coords < np.inf))
             weights = []
             for mask in masks:
@@ -411,8 +421,8 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
         if optimal_weights is None:
             # Compute effective redshift
             fields = None
-            seed = [(42, randoms.__dict__['IDS']) for randoms in all_randoms]
-            zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True)
+            seed = [(42, randoms.extra["IDS"]) for randoms in all_randoms]
+            zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True, **kw_zeff)
             results = _compute_window_ell(all_randoms, ells=ells, fields=fields)
             for key in results:
                 if 'correlation' not in key:
@@ -421,6 +431,7 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                     results[key] = results[key].clone(observable=observable)
         else:
             results = {}
+            # Loop over multipoles
             for ell in ells:
                 if jax.process_index() == 0:
                     logger.info(f'Applying optimal weights for ell = {ell:d}')
@@ -436,16 +447,17 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                             yield tuple(None for particles in all_particles)
                     def clone(particles, weights):
                         toret = particles.clone(weights=weights)
-                        toret.__dict__.update(particles.__dict__)  # to keep IDS
                         return toret
-                    for all_weights in optimal_weights(ell, [{'INDWEIGHT': particles.weights} | {column: particles.__dict__[column] for column in columns_optimal_weights} for particles in all_particles]):
+
+                    for all_weights in optimal_weights(ell, [{"INDWEIGHT": particles.weights} | {column: particles.extra[column] for column in columns_optimal_weights} for particles in all_particles]):
                         yield tuple(clone(particles, weights=weights) for particles, weights in zip(all_particles, all_weights))
 
                 result_ell = {}
                 for isum, all_randoms in enumerate(_get_optimal_weights(all_randoms)):
+                    # Loop over weight combinations for the same multipole
                     fields = None
-                    seed = [(42, randoms.__dict__['IDS']) for randoms in all_randoms]
-                    zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True)
+                    seed = [(42, randoms.extra["IDS"]) for randoms in all_randoms]
+                    zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True, **kw_zeff)
                     _result = _compute_window_ell(all_randoms, ells=[ell], isum=isum, fields=fields)
                     for key in _result:  # raw, cut, auw
                         if 'correlation' not in key:
@@ -456,11 +468,12 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                         result_ell[key].append(_result[key])
                 for key, windows in result_ell.items():
                     results.setdefault(key, [])
+                    # windows can be WindowMatrix and ObservableTree (window correlation)
                     window = combine_stats(windows)  # sum 1<->2
                     # Used power spectrum norm is for the sum of the two;
                     # just sum the two components
                     window = window.clone(value=sum(window.value() for window in windows))
-                    results[key].append(combine_stats(windows))
+                    results[key].append(window)
             for key in results:
                 if 'correlation' in key:
                     results[key] = types.join(results[key])
@@ -471,6 +484,403 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                     results[key] = results[key][0].clone(value=value, observable=observable)  # join multipoles
 
     return results
+
+
+def compute_window_mesh2_spectrum_fm(
+    *get_data_randoms: Callable,
+    spectrum: types.Mesh2SpectrumPoles,
+    theory: types.Mesh2SpectrumPoles,
+    optimal_weights: Callable | None,
+    data_to_randoms_ratio: float,
+    catalog_split_seed: int,
+    geo: bool,
+    ric_nbins: int,
+    ric_regions: list[str],
+    amr: bool,  # is optional
+    regression_maps: list[str] | None,
+    templates_paths_kwargs: dict | None,
+    amr_regions_zranges: list[tuple[str, tuple[float, float]]] | None,
+    spectrum_regions: list[str] | None,
+    unitary_amplitude: bool = True,
+    n_realizations: int,
+    seeds: list[int] | None,
+    batch_size: int = 4,
+) -> dict[str, dict[str, list[types.WindowMatrix]]]:
+    """
+    Compute the 2-point spectrum window with :mod:`desiwinds`.
+
+    Parameters
+    ----------
+    *get_data_randoms : Callable
+        Functions that return tuples of (data, randoms) catalogs.
+    spectrum : lsstypes.Mesh2SpectrumPoles
+        Measured 2-point spectrum multipoles. Only used for their attributes, not their values.
+    theory: lsstypes.Mesh2SpectrumPoles
+        Input theory power spectrum, used as a fiducial for the derivative. Attributes (e.g. ells) used for mock survey generation; value used for the derivative.
+    optimal_weights : Callable or None
+        Function taking (ell, catalog) as input and returning total weights to apply to data and randoms.
+        It can have an optional attribute 'columns' that specifies which additional columns are needed to compute the optimal weights.
+        As a default, ``optimal_weights.columns = ['Z']`` to indicate that redshift information is needed.
+        A dictionary ``catalog`` of columns is provided, containing 'INDWEIGHT' and the requested columns.
+        If ``None``, no optimal weights are applied.
+    data_to_randoms_ratio : float
+        Population ratio between "data" and "randoms" to pick in the input randoms catalogs. Must be between 0 and 1.
+    catalog_split_seed : int
+        Random seed to use for the random split between "data" and "randoms" in the input randoms catalogs.
+    geo : bool
+        Whether to return the sampled window for the geometry. If False, only the RIC (±AMR) contribution is returned.
+    ric_nbins : int
+        Number of radial bins to use for the RIC.
+    ric_regions : list[str]
+        Regions to use for the RIC, e.g. ``["N", "S"]`` or ``["N", "SnoDES", "DES]``.
+    amr : bool
+        Whether to apply the angular mode removal (AMR), i.e. to forward model the power loss due to linear angular systematics weights.
+    regression_maps : list[str] | None
+        Names of the systematics templates to use for the AMR. Can be set to ``None`` if ``amr=False``.
+    templates_paths_kwargs : dict
+        Keyword arguments to pass to the function loading the templates maps, e.g. paths to the templates files, EBV map, nside, etc. Not needed if ``amr=False``. Must at least contain the keys ``templates_path_N`` and ``templates_path_S`` with the paths to the templates files for the Northern and Southern regions, respectively.
+    amr_regions_zranges : list[tuple[str, tuple[float, float]]] | None
+        Regions where to apply the regressions for the AMR, and corresponding redshift ranges. Can be set to ``None`` if ``amr=False``.
+    spectrum_regions : list[str] | None
+        Regions for which to compute the window and power spectrum. If ``None``, the whole catalog is used as one region. Typically ``["NGC", "SGC"]``.
+    n_realizations : int
+        Number of realizations to compute.
+    seeds : list[int] | None
+        Seeds to use for each realization. If ``None``, defaults to ``2 * i_realization + 3``.
+    unitary_amplitude : bool, optional
+        Whether to use unitary amplitude for the mock survey mesh generation, by default True.
+    batch_size : int, optional
+        Number of window computations to run in parallel, by default 4. Depends on the available memory, number of randoms catalogs, size of the mesh... Lower if needed.
+
+    Returns
+    -------
+    dict[str, dict[str, list[lsstypes.WindowMatrix]]]
+        Dictionary, per effect included (geometry, RIC, RIC+AMR) and per region, of lists of window matrices (one per realization).
+    """
+    assert len(seeds) == n_realizations if seeds is not None else True, "If seeds are provided, their number must match n_realizations."
+    # Notes to self:
+    # * RIC not optional
+    # * n_randoms is effectively set by the length of get_data_randoms
+    import mpytools as mpy
+    from desiwinds.forward import mock_survey_catalog, prepare_AMR, prepare_RIC
+    from desiwinds.window import get_window_spikes
+    from jaxpower import BinMesh2SpectrumPoles, FKPField, ParticleField, compute_fkp2_normalization, create_sharding_mesh
+
+    from .tools import add_photometric_template_values, select_region
+
+    def _add_photometric_template_values(catalogs: dict[str, mpy.Catalog]):
+        return {name: add_photometric_template_values(catalogs[name], regression_maps, **templates_paths_kwargs) for name in catalogs}
+
+    def _select_region(catalogs: dict[str, mpy.Catalog], spectrum_region: str) -> dict[str, mpy.Catalog]:
+        return {name: catalog[select_region(ra=catalog["RA"], dec=catalog["DEC"], region=spectrum_region)] for name, catalog in catalogs.items()}
+
+    def _split_data_randoms(catalogs: dict[str, mpy.Catalog]) -> dict[str, mpy.Catalog]:
+        """Split the randoms into "data" and "randoms" based on the provided ratio. Overwrite original "data"."""
+        data_size = int(data_to_randoms_ratio * catalogs["randoms"].size)  # MPI local
+        randoms_size = catalogs["randoms"].size - data_size
+        rng = mpy.random.MPIRandomState(seed=catalog_split_seed, size=catalogs["randoms"].size)  # Use local sizes
+        mask_is_data = rng.uniform() < (data_size / (data_size + randoms_size))
+        data = catalogs["randoms"][mask_is_data]
+        randoms = catalogs["randoms"][~mask_is_data]
+        return {"data": data, "randoms": randoms}
+
+    def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
+        return fkp_field.clone(
+            data=fkp_field.data.clone(
+                weights=data_weights * getattr(fkp_field.data, estimator_weights, 1.0),
+            ),
+            randoms=fkp_field.randoms.clone(
+                weights=randoms_weights * getattr(fkp_field.randoms, estimator_weights, 1.0),
+            ),
+        )
+
+    def _safe_divide(a, b):
+        return jnp.where(b != 0, a / b, 0.0)
+
+    spectrum_regions = spectrum_regions or []
+    columns_optimal_weights = []
+    if optimal_weights is not None:
+        columns_optimal_weights += getattr(optimal_weights, "columns", [])  # to compute optimal weights, e.g. for fnl
+
+    # Recover output and mesh information from the observable spectrum
+    ellsout = spectrum.ells
+    los = spectrum.attrs["los"]  # this has to match with theory input
+    if los in ["endpoint", "firstpoint"]:
+        los = "local"
+    mattrs = {name: spectrum.attrs[name] for name in ["boxsize", "boxcenter", "meshsize"]}
+
+    with create_sharding_mesh(meshsize=mattrs.get("meshsize", None)):
+        # Split into "data" and randoms based on the provided ratio
+        def wrap(f):
+            return lambda: _split_data_randoms(f())
+
+        get_data_randoms = [wrap(_get_data_randoms) for _get_data_randoms in get_data_randoms]
+
+        if amr:  # Add photometric template values to the catalogs, if AMR is applied, as they are needed for the regression
+
+            def wrap(f):
+                return lambda: _add_photometric_template_values(f())
+
+            get_data_randoms = [wrap(_get_data_randoms) for _get_data_randoms in get_data_randoms]
+
+        if len(spectrum_regions) > 0:  # Split catalogs into pk regions, if specified
+
+            def wrap(f, spectrum_region):
+                return lambda: _select_region(f(), spectrum_region)
+
+            get_data_randoms = [
+                wrap(_get_data_randoms, spectrum_region) for spectrum_region in spectrum_regions for _get_data_randoms in get_data_randoms
+            ]  # [func1_region1, func2_region1, func3_region1 ... func1_region2, func2_region2, func3_region2 ...]
+
+        all_particles = prepare_jaxpower_particles(
+            *get_data_randoms,
+            mattrs=mattrs,
+            add_randoms=["IDS", "WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights],
+            add_data=["WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights],
+        )
+        all_randoms = [particles["randoms"] for particles in all_particles]
+        all_data = [particles["data"] for particles in all_particles]
+        del all_particles
+
+        # Make into len(spectrum_regions) catalogs if split into spectrum regions, otherwise one catalog
+        nregion = len(spectrum_regions) if len(spectrum_regions) > 0 else 1
+        nrandoms = len(all_randoms)
+        chunk_size = nrandoms // nregion
+        all_randoms = [ParticleField.concatenate(all_randoms[chunk_size * i : chunk_size * (i + 1)]) for i in range(nregion)]
+        all_data = [ParticleField.concatenate(all_data[chunk_size * i : chunk_size * (i + 1)]) for i in range(nregion)]
+
+        for iregion in range(nregion):
+            # Randoms
+            extra = all_randoms[iregion].extra
+            if amr:
+                template_values = jnp.stack([extra.pop(map_name) for map_name in regression_maps], axis=-1)
+                extra.update({"template_values": template_values})
+            # extra already has weight_FKP, just remove from weights=indweights which contains FKP weights
+            all_randoms[iregion] = all_randoms[iregion].clone(
+                extra=extra, weights=_safe_divide(all_randoms[iregion].weights, all_randoms[iregion].extra["WEIGHT_FKP"])
+            )
+
+            # Data
+            extra = all_data[iregion].extra
+            if amr:
+                template_values = jnp.stack([extra.pop(map_name) for map_name in regression_maps], axis=-1)
+                extra.update({"template_values": template_values})
+            all_data[iregion] = all_data[iregion].clone(extra=extra, weights=_safe_divide(all_data[iregion].weights, all_data[iregion].extra["WEIGHT_FKP"]))
+        del extra
+
+        if jax.process_index() == 0:
+            logger.info("Catalogs ready, starting preparation...")
+
+        # Prepare arguments for the window computation function
+        ric_args = prepare_RIC(data=all_data, randoms=all_randoms, regions=ric_regions, n_bins=ric_nbins, apply_to="randoms")
+
+        if amr:
+            extra_effects = "RIC+AMR"
+            amr_args = prepare_AMR(data=all_data, randoms=all_randoms, regions_zranges=amr_regions_zranges, apply_to="randoms")
+            for iregion in range(nregion):
+                extra = all_randoms[iregion].extra
+                del extra["template_values"]
+                all_randoms[iregion] = all_randoms[iregion].clone(extra=extra)
+                # data
+                extra = all_data[iregion].extra
+                del extra["template_values"]
+                all_data[iregion] = all_data[iregion].clone(extra=extra)
+            del extra
+        else:
+            extra_effects = "RIC"
+            amr_args = None
+
+        # Turn into FKP fields
+        fkp_fields = [FKPField(data=d, randoms=r, attrs=mattrs) for d, r in zip(all_data, all_randoms, strict=True)]
+        del all_data, all_randoms
+        # Compute FKP normalization for each region, with the estimator weights, and for each ell if optimal weights are applied
+        if optimal_weights is None:
+            if jax.process_index() == 0:
+                logger.info("Using FKP weights, computing window for all ells at once.")
+            # Using FKP weights which are symetrical, so this remains an autocorr
+            binner = BinMesh2SpectrumPoles(fkp_fields[0].attrs, edges=spectrum.get(0).edges("k"), ells=ellsout)  # TODO: check edges are ok
+
+            # Temporarily add FKP weights to the fkp_fields weights for norm and analytical computation
+            fkp_norms = [
+                compute_fkp2_normalization(_update_fkp(fkp.data.weights, fkp.randoms.weights, fkp, "WEIGHT_FKP"), bin=binner, cellsize=10.0)
+                for fkp in fkp_fields
+            ]
+
+            ## FM based computations
+            windows = {}
+
+            # Shared window FM arguments
+            window_fm_kw = {
+                "mock_survey": mock_survey_catalog,
+                "theory": theory,
+                "nreal": n_realizations,
+                "seeds": seeds,
+                "batch_size": batch_size,
+                "mock_survey_args": (*fkp_fields,),
+                "static_argnames": ["los", "unitary_amplitude", "estimator_weights"],
+                "tmpdir": None,  # No temporary output
+                "survey_names": spectrum_regions,
+            }
+            mock_survey_kwargs = {
+                "los": los,
+                "unitary_amplitude": unitary_amplitude,
+                "nam_args": None,
+                "fkp_norms": fkp_norms,
+                "binner": binner,
+                "estimator_weights": "WEIGHT_FKP",
+                "data_regions": ric_args.data_regions,
+                "randoms_regions": ric_args.randoms_regions,
+            }
+
+            if geo:
+                if jax.process_index() == 0:
+                    logger.info("Computing geometry window with desiwinds...")
+                _, windows_fm_geo = get_window_spikes(
+                    **window_fm_kw,
+                    mock_survey_kwargs=mock_survey_kwargs | {"ric_args": None, "amr_args": None},
+                )
+
+                windows["geometry"] = windows_fm_geo
+
+            if jax.process_index() == 0:
+                logger.info("Computing total window with desiwinds...")
+            _, windows_fm = get_window_spikes(
+                **window_fm_kw,
+                mock_survey_kwargs=mock_survey_kwargs | {"ric_args": ric_args, "amr_args": amr_args},
+            )
+
+            windows[extra_effects] = windows_fm
+            if jax.process_index() == 0:
+                logger.info("desiwinds window computation finished.")
+
+            return windows
+
+        else:
+            if jax.process_index() == 0:
+                logger.info("Using optimal weights, computing windows for each ell separately.")
+            # Optimal weights: non symmetrical, so need to compute "cross-correlation" (same tracer, different weights) + not the same for all ells
+            # Proceed ell per ell and sum the windows at the end
+            def _attach_weights(fkp_field, ell):
+                data_w1, data_w2 = next(
+                    optimal_weights(
+                        ell,
+                        [
+                            {column: fkp_field.data.extra[column] for column in ["Z", *columns_optimal_weights]}
+                            | {"INDWEIGHT": fkp_field.data.weights * fkp_field.data.extra["WEIGHT_FKP"]}
+                        ],
+                    )
+                )
+
+                randoms_w1, randoms_w2 = next(
+                    optimal_weights(
+                        ell,
+                        [
+                            {column: fkp_field.randoms.extra[column] for column in ["Z", *columns_optimal_weights]}
+                            | {"INDWEIGHT": fkp_field.randoms.weights * fkp_field.randoms.extra["WEIGHT_FKP"]}
+                        ],
+                    )
+                )
+                # These weights also contain real weights and FKP weights ; need to remove the real weights to isolate the "estimator weights" to apply at computation time in the FM
+                return fkp_field.clone(
+                    data=fkp_field.data.clone(
+                        extra=fkp_field.data.extra
+                        | {
+                            "weight_optimal_1": _safe_divide(data_w1, fkp_field.data.weights),
+                            "weight_optimal_2": _safe_divide(data_w2, fkp_field.data.weights),
+                        }
+                    ),
+                    randoms=fkp_field.randoms.clone(
+                        extra=fkp_field.randoms.extra
+                        | {
+                            "weight_optimal_1": _safe_divide(randoms_w1, fkp_field.randoms.weights),
+                            "weight_optimal_2": _safe_divide(randoms_w2, fkp_field.randoms.weights),
+                        }
+                    ),
+                )
+
+            windows = {extra_effects: {}}
+            if geo:
+                windows["geometry"] = {}
+
+            for ell in ellsout:
+                binner = BinMesh2SpectrumPoles(fkp_fields[0].attrs, edges=spectrum.get(ell).edges("k"), ells=[ell])  # TODO: check edges are ok
+                fkp_fields = [_attach_weights(fkp_field, ell) for fkp_field in fkp_fields]
+                # Compute FKP normalization for each region, with the estimator weights (cross correlation), and for given ell = binner
+                fkp_norms = [
+                    compute_fkp2_normalization(
+                        _update_fkp(fkp.data.weights, fkp.randoms.weights, fkp, "weight_optimal_1"),
+                        _update_fkp(fkp.data.weights, fkp.randoms.weights, fkp, "weight_optimal_2"),
+                        bin=binner,
+                        cellsize=10.0,
+                    )
+                    for fkp in fkp_fields
+                ]
+
+                # Shared window FM arguments
+                window_fm_kw = {
+                    "mock_survey": mock_survey_catalog,
+                    "theory": theory,
+                    "nreal": n_realizations,
+                    "seeds": seeds,
+                    "batch_size": batch_size,
+                    "mock_survey_args": [(fkp,) * 2 for fkp in fkp_fields],  # same FKP field but with different weights
+                    "static_argnames": ["los", "unitary_amplitude", "estimator_weights"],
+                    "tmpdir": None,  # No temporary output
+                    "survey_names": spectrum_regions,
+                }
+                mock_survey_kwargs = {
+                    "los": los,
+                    "unitary_amplitude": unitary_amplitude,
+                    "nam_args": None,
+                    "fkp_norms": fkp_norms,
+                    "binner": binner,  # one ell only
+                    "estimator_weights": ("weight_optimal_1", "weight_optimal_2"),
+                    "data_regions": ric_args.data_regions,
+                    "randoms_regions": ric_args.randoms_regions,
+                }
+
+                if geo:
+                    if jax.process_index() == 0:
+                        logger.info("Computing geometry window for ell=%i with desiwinds...", ell)
+                    _, _windows_fm_geo = get_window_spikes(
+                        **window_fm_kw,
+                        mock_survey_kwargs=mock_survey_kwargs | {"ric_args": None, "amr_args": None},
+                    )
+
+                    windows["geometry"][ell] = _windows_fm_geo
+
+                if jax.process_index() == 0:
+                    logger.info("Computing total window for ell=%i with desiwinds...", ell)
+                _, _windows_fm = get_window_spikes(
+                    **window_fm_kw,
+                    mock_survey_kwargs=mock_survey_kwargs | {"ric_args": (ric_args,) * 2, "amr_args": (amr_args,) * 2},
+                )
+
+                windows[extra_effects][ell] = _windows_fm
+
+            if jax.process_index() == 0:
+                logger.info("desiwinds window computation finished.")
+
+            # For each region, sum the windows over ells and apply control variate
+
+            def _combine_ells(windows):
+                observables = [window.observable for window in windows]
+                observable = types.join(observables)
+                value = np.concatenate([window.value() for window in windows], axis=0)
+                return windows[0].clone(value=value, observable=observable)  # join multipoles
+
+            if geo:
+                windows["geometry"] = {
+                    spectrum_region: [_combine_ells([windows["geometry"][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
+                    for idx, spectrum_region in enumerate(spectrum_regions)
+                }
+
+            windows[extra_effects] = {
+                spectrum_region: [_combine_ells([windows[extra_effects][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
+                for idx, spectrum_region in enumerate(spectrum_regions)
+            }
+
+            return windows
 
 
 def run_preliminary_fit_mesh2_spectrum(data: types.Mesh2SpectrumPoles, window: types.WindowMatrix, select: dict=None, theory: str='rept', fixed=tuple(), out: types.Mesh2SpectrumPoles=None):
@@ -521,9 +931,7 @@ def run_preliminary_fit_mesh2_spectrum(data: types.Mesh2SpectrumPoles, window: t
 
     template = FixedPowerSpectrumTemplate(fiducial='DESI', z=z)
     theory = Theory(template=template)
-    observable = TracerPowerSpectrumMultipolesObservable(data=data.value(concatenate=True), wmatrix=window.value(), ells=data.ells,
-                                                         k=[pole.coords('k') for pole in data], kin=window.theory.get(ells=0).coords('k'),
-                                                         ellsin=window.theory.ells, theory=theory)
+    observable = TracerPowerSpectrumMultipolesObservable(data=data, window=window, theory=theory)
     likelihood = ObservablesGaussianLikelihood(observable, covariance=covariance.value())
     for param in fixed:
         likelihood.all_params[param].update(fixed=True)
@@ -532,9 +940,19 @@ def run_preliminary_fit_mesh2_spectrum(data: types.Mesh2SpectrumPoles, window: t
     profiles = profiler.maximize()
     params = profiles.bestfit.choice(index='argmax', input=True)
     if out is None:
-        theory.init.update(k=smooth.get(0).coords('k'))
-        poles = theory(**params)
-        smooth = smooth.clone(value=poles.ravel())
+        poles = []
+        for ill, ell in enumerate(theory.ells):
+            if ell in smooth.ells:
+                pole = smooth.get(ells=ell)
+            else:
+                pole = smooth.get(ells=0).clone(meta={"ell": ell})
+                if ell != 0:
+                    pole = pole.clone(num_shotnoise=np.zeros_like(pole.values("num_shotnoise")))
+            theory.init.update(k=pole.coords("k"))
+            value = theory(**params)[ill]
+            pole = pole.clone(value=value)
+            poles.append(pole)
+        smooth = types.Mesh2SpectrumPoles(poles, attrs=smooth.attrs)
     else:
         value = []
         for label, pole in out.items(level=1):
@@ -570,21 +988,23 @@ def compute_covariance_mesh2_spectrum(*get_data_randoms, theory=None, fields=Non
     fftlog = True
     if fields is None:
         fields = list(range(1, 1 + len(get_data_randoms)))
+
     results = {}
     with create_sharding_mesh(meshsize=mattrs.get('meshsize', None)):
         all_particles = prepare_jaxpower_particles(*get_data_randoms, mattrs=mattrs, add_randoms=['IDS'])
         all_fkp = [FKPField(particles['data'], particles['randoms']) for particles in all_particles]
         mattrs = all_fkp[0].attrs
         kw = dict(edges={'step': mattrs.cellsize.min()}, basis='bessel') if fftlog else dict(edges={})
-        kw.update(los='local', fields=fields)
+        kw.update(los='local', fields=fields, split=[(42, fkp.randoms.extra['IDS']) for fkp in all_fkp])
         kw_paint = dict(resampler='tsc', interlacing=3, compensate=True)
         windows = compute_fkp2_covariance_window(all_fkp, **kw, **kw_paint)
+        #if jax.process_index() == 0: windows.write(f'_tests/window_correlation.h5')
         if fftlog:
+            # Very robust to this choice
             coords = np.logspace(-2, 8, 8 * 1024)
             windows = windows.map(lambda window: interpolate_window_function(window, coords=coords), level=1)
         results['window_covariance_mesh2_correlation'] = windows
 
-    # delta is the maximum abs(k1 - k2) where the covariance will be computed (to speed up calculation)
     covariance = compute_spectrum2_covariance(windows, theory, flags=['smooth'] + (['fftlog'] if fftlog else []))
     # Update label names
     fields = covariance.observable.fields

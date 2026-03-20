@@ -8,6 +8,7 @@ doc/_build/
 **/.cache
 **/.config
 **/.wget*
+**/_cache
 **/_tests
 **/_runs
 **/_tmp
@@ -21,3 +22,4 @@ doc/_build/
 
 # Unit test / coverage reports
 **/.coverage
+**/slurm*

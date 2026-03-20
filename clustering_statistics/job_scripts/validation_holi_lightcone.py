@@ -22,7 +22,7 @@ stats_dir = Path(os.getenv('CFS')) / 'cai' / 'holi_lightcone_validation2'
 plots_dir = Path('./_plots')
 
 
-def run_stats(tracer='LRG', zranges=None, version='holi-v4.80', weight='default-FKP', imocks=[0], stats_dir=stats_dir, stats=['mesh2_spectrum'], get_catalog_fn=tools.get_catalog_fn):
+def run_stats(tracer='LRG', zranges=None, version='holi-v4.80', weight='default', imocks=[0], stats_dir=stats_dir, stats=['mesh2_spectrum'], get_catalog_fn=tools.get_catalog_fn):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
     import os
@@ -51,16 +51,17 @@ def run_stats(tracer='LRG', zranges=None, version='holi-v4.80', weight='default-
             else:
                 stat = 'mesh3_spectrum'
         for imock in imocks:
-            regions = ['NGC', 'SGC'][1:]
+            regions = ['NGC', 'SGC']
             for region in regions:
-                options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight, imock=imock), mesh2_spectrum={'mattrs': {'boxsize': 10000., 'meshsize': 750}}, **kw)
+                mattrs = {'boxsize': 10000., 'meshsize': 750}
+                options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight, imock=imock), mesh2_spectrum={'mattrs': mattrs}, covariance_mesh2_spectrum={'mattrs': mattrs}, **kw)
                 #options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight, imock=imock), mesh2_spectrum={}, **kw)
                 options = fill_fiducial_options(options, analysis='full_shape_protected' if 'data' in version else 'full_shape')
                 if 'uchuu-hf-complete' in version:
                     for tracer in options['catalog']:
                         options['catalog'][tracer]['nran'] = min(options['catalog'][tracer]['nran'], 4)
 
-                def read_clustering_catalog(**kwargs):
+                def read_clustering_catalog_test(**kwargs):
                     catalog = tools.read_clustering_catalog(**kwargs)
                     mask = (catalog['Z'] > 0.85) & (catalog['Z'] < 0.95)
                     return catalog[~mask]
@@ -68,6 +69,14 @@ def run_stats(tracer='LRG', zranges=None, version='holi-v4.80', weight='default-
                 compute_stats_from_options(stat, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), get_catalog_fn=get_catalog_fn, cache=cache, **options)
     #jax.distributed.shutdown()
 
+
+def postprocess_stats(tracer='LRG', version='holi-v4.80', weight='default', imocks=[0], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', postprocess=['combine_regions'], **kwargs):
+    from clustering_statistics import postprocess_stats_from_options
+    zranges = tools.propose_fiducial('zranges', tracer)
+    options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, weight=weight, imock=1), imocks=imocks, combine_regions={'stats': ['mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum', 'mesh3_spectrum', 'window_mesh3_spectrum'][:3]})
+    get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
+    postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **options)
+                
 
 def plot_density(imock=[0], tracer='LRG', zranges=None, version='holi-v4.80', weight='default', plots_dir=plots_dir, nside=64, get_catalog_fn=tools.get_catalog_fn):
     from clustering_statistics.density_tools import plot_density_projections
@@ -180,12 +189,14 @@ def fit_large_scales(imock=0, tracer='LRG', zranges=None, version='v4.80', weigh
 
 if __name__ == '__main__':
 
-    #todo = ['test']
+    todo = ['stats']
     #todo = ['density']
     #todo = ['randoms']
-    todo = ['large_scales']
+    #todo = ['large_scales']
     weight = 'default'
-    stats = ['mesh2_spectrum', 'mesh3_spectrum_sugiyama', 'mesh3_spectrum_scoccimarro', 'window_mesh2_spectrum'][-1:]
+    stats = ['mesh2_spectrum', 'mesh3_spectrum_sugiyama', 'mesh3_spectrum_scoccimarro', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum'][-2:]
+    stats = []
+    postprocess = ['combine_regions']
 
     if 'ref' in todo:
         imocks = list(range(5))
@@ -235,24 +246,27 @@ if __name__ == '__main__':
             
             make_merged_random_catalog(imocks=imocks, tracer=tracer, version=version, stats_dir=stats_dir, nran=18, get_catalog_fn=get_holi_catalog_fn)
 
-    if 'test' in todo:
+    if 'stats' in todo:
         #version = 'v4.00'
         version = 'v4.80'
         tracers = ['LRG', 'ELG', 'QSO']
         for tracer in tracers:
             imocks = list_existing_imocks(50, version=version, tracers=[tracer], maximock=47)
             zranges = None
-            if any('window' in stat for stat in stats):
+            if any('window' in stat or 'covariance' in stat for stat in stats):
                 imocks = [1]
-            run_stats(tracer, version=version, weight=weight, stats=stats, stats_dir=stats_dir, get_catalog_fn=get_holi_catalog_fn, zranges=zranges, imocks=imocks)
-
+            if stats:
+                run_stats(tracer, version=version, weight=weight, stats=stats, stats_dir=stats_dir, get_catalog_fn=get_holi_catalog_fn, zranges=zranges, imocks=imocks)
+            if postprocess:
+                postprocess_stats(tracer, version=version, weight=weight, imocks=imocks, stats_dir=stats_dir, postprocess=postprocess)
+    
     if 'density' in todo:
         version = 'v4.80'
         #version = 'v4.00'
         tracers = ['LRG', 'ELG', 'QSO']
         for tracer in tracers:
             imocks = list_existing_imocks(100, version=version, tracers=[tracer])
-            plot_density(imock=imocks, tracer=tracer, version=version, weight='default', get_catalog_fn=get_holi_catalog_fn)
+            plot_density(imock=imocks, tracer=tracer, version=version, weight=weight, get_catalog_fn=get_holi_catalog_fn)
 
     if 'large_scales' in todo:
         version = 'v4.80'
@@ -260,4 +274,4 @@ if __name__ == '__main__':
         tracers = ['LRG', 'ELG', 'QSO']
         for tracer in tracers:
             zranges = None
-            fit_large_scales(imock=1, tracer=tracer, zranges=zranges, version=version, weight='default', stats_dir=stats_dir, plots_dir=plots_dir, get_catalog_fn=get_holi_catalog_fn)
+            fit_large_scales(imock=1, tracer=tracer, zranges=zranges, version=version, weight=weight, stats_dir=stats_dir, plots_dir=plots_dir, get_catalog_fn=get_holi_catalog_fn)

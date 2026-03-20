@@ -13,7 +13,14 @@ import lsstypes as types
 from . import tools
 from .tools import fill_fiducial_options, _merge_options, Catalog, setup_logging
 from .correlation2_tools import compute_angular_upweights, compute_particle2_correlation
-from .spectrum2_tools import compute_mesh2_spectrum, compute_window_mesh2_spectrum, compute_covariance_mesh2_spectrum, run_preliminary_fit_mesh2_spectrum, compute_rotation_mesh2_spectrum
+from .spectrum2_tools import (
+    compute_mesh2_spectrum,
+    compute_window_mesh2_spectrum,
+    compute_covariance_mesh2_spectrum,
+    run_preliminary_fit_mesh2_spectrum,
+    compute_rotation_mesh2_spectrum,
+    compute_window_mesh2_spectrum_fm,
+)
 from .spectrum3_tools import compute_mesh3_spectrum, compute_window_mesh3_spectrum
 from .recon_tools import compute_reconstruction
 
@@ -60,7 +67,7 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
     ----------
     stats : str or list of str
         Summary statistics to compute.
-        Choices: ['mesh2_spectrum', 'mesh3_spectrum', 'recon_mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
+        Choices: ['mesh2_spectrum', 'mesh3_spectrum', 'recon_mesh2_spectrum', 'window_mesh2_spectrum', 'window_mesh2_spectrum_fm', 'covariance_mesh2_spectrum']
     analysis : str, optional
         Type of analysis, 'full_shape' or 'png_local', to set fiducial options.
     cache : dict, optional
@@ -213,10 +220,13 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                             spectrum[key] = tools.apply_blinding(spectrum[key], tracers, zrange=sum(zrange.values(), start=tuple()))
                         tools.write_stats(fn, spectrum[key])
 
-        jax.experimental.multihost_utils.sync_global_devices('spectrum')  # such that spectrum ready for window
+        jax.experimental.multihost_utils.sync_global_devices('spectrum')  # wait for the writer 
 
         # Window matrix
-        funcs = {'window_mesh2_spectrum': compute_window_mesh2_spectrum, 'window_mesh3_spectrum': compute_window_mesh3_spectrum}
+        funcs = {
+            "window_mesh2_spectrum": compute_window_mesh2_spectrum,
+            "window_mesh3_spectrum": compute_window_mesh3_spectrum,
+        }
 
         for stat, func in funcs.items():
             if stat in stats:
@@ -233,7 +243,7 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                 spectrum_fn = window_options.pop('spectrum', None)
                 fn_window_options = window_options | dict(auw=False, cut=False)
                 if spectrum_fn is None:
-                    spectrum_stat = stat.replace('window_', '')
+                    spectrum_stat = stat.replace("window_", "")
                     fn_window_options = options[spectrum_stat] | fn_window_options
                     spectrum_fn = get_stats_fn(kind=spectrum_stat, catalog=fn_catalog_options, **(options[spectrum_stat] | dict(auw=False, cut=False)))
                 spectrum = types.read(spectrum_fn)
@@ -260,6 +270,102 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                     if 'correlation' in key:  # window functions
                         fn = get_stats_fn(kind=key, catalog=fn_catalog_options, **(fn_window_options | dict(extra=extra)))
                         tools.write_stats(fn, window[key])
+
+        jax.experimental.multihost_utils.sync_global_devices('window')  # wait for the writer
+        # Window matrix using forward model
+        funcs = {"window_mesh2_spectrum_fm": compute_window_mesh2_spectrum_fm}
+
+        for stat, func in funcs.items():
+            if stat in stats:
+                if len(tracers) > 1:
+                    raise NotImplementedError("Forward model window function not yet implemented for cross-correlations")
+
+                window_options = dict(options[stat])
+                selection_weights = window_options.pop("selection_weights", None)
+
+                def get_data(tracer):
+                    czrandoms = Catalog.concatenate(zrandoms[tracer])
+                    toret = {"data": zdata[tracer], "randoms": czrandoms}
+                    if selection_weights:
+                        toret = {name: selection_weights[tracer](catalog) for name, catalog in toret.items()}
+                    return toret
+
+                def _check_fn(fn, tracers, name=""):
+                    if len(tracers) == 1:
+                        fn = {(tracer, tracer): fn for tracer in tracers}
+                    else:
+                        raise ValueError(f"provide a dictionary of (tracer1, tracer2): {name} for tracer1, tracer2 in {tracers}")
+                    return fn
+
+                def _read_tracer(fns, tracers2):
+                    if tracers2 not in fns:
+                        tracers2 = tracers2[::-1]
+                    return types.read(fns[tracers2])
+
+                # Get fiducial theory for derivative
+                theory_stat = stat.replace("window_", "theory_").replace("_fm", "")
+                theory_fn = window_options.pop("theory", None)
+
+                if theory_fn is None:
+                    products_fn = {spectrum_region: {} for spectrum_region in window_options["spectrum_regions"]}
+                    # Collect power spectrum and window, for each region if relevant
+                    for spectrum_region in window_options["spectrum_regions"]:
+                        for name in ["spectrum", "window"]:
+                            kind_stat = (
+                                stat.replace("window_", "").replace("_fm", "") if name == "spectrum" else stat.replace("window_", f"{name}_").replace("_fm", "")
+                            )
+                            fn = window_options.pop(name, None)
+                            if fn is None:
+                                kw = options[kind_stat] | {"auw": False, "cut": False}
+                                fn = get_stats_fn(
+                                    kind=kind_stat,
+                                    catalog=fn_catalog_options[tracers[0]],
+                                    **kw | {"region": spectrum_region},
+                                )
+                            products_fn[spectrum_region][name] = fn
+
+                    spectra = [types.read(products_fn[spectrum_region]["spectrum"]) for spectrum_region in window_options["spectrum_regions"]]
+                    windows = [types.read(products_fn[spectrum_region]["window"]) for spectrum_region in window_options["spectrum_regions"]]
+                    theory = types.sum(
+                        [run_preliminary_fit_mesh2_spectrum(data=spectrum, window=window) for spectrum, window in zip(spectra, windows, strict=True)]
+                    )
+                    spectrum = types.sum(spectra)
+                    theory_fn = get_stats_fn(
+                        kind=theory_stat,
+                        catalog=(fn_catalog_options[tracers[0]]),
+                    )
+                    tools.write_stats(theory_fn, theory)
+
+                jax.experimental.multihost_utils.sync_global_devices("theory")  # such that theory ready for window
+                theory = types.read(theory_fn)
+
+                # Load example of output measurement. If spectrum_fn provided, use it; otherwise use spectrum loaded for the preliminary fit in the theory block above
+                spectrum_fn = window_options.pop("spectrum", None)
+                fn_window_options = window_options | {"auw": False, "cut": False}
+                if spectrum_fn is None:
+                    spectrum_fn = {}
+                    spectrum_stat = stat.replace("window_", "").replace("_fm", "")
+                    for spectrum_region in window_options["spectrum_regions"]:
+                        fn_window_options = options[spectrum_stat] | fn_window_options
+                        spectrum_fn[spectrum_region] = get_stats_fn(
+                            kind=spectrum_stat,
+                            catalog=fn_catalog_options,
+                            **(options[spectrum_stat] | {"auw": False, "cut": False} | {"region": spectrum_region}),
+                        )
+                    spectrum = types.sum([types.read(spectrum_fn[spectrum_region]) for spectrum_region in window_options["spectrum_regions"]])
+                else:
+                    spectrum = types.read(spectrum_fn)
+
+                # Now compute window function using forward model
+                window = func(*[functools.partial(get_data, tracer) for tracer in tracers], spectrum=spectrum, theory=theory, **window_options)
+                # This is a dict of dict of lists of windows : {modeled_effect:{spectrum_region:[window, ...], ...}, ...}
+                for effect in window:  # geo, RIC or RIC+AMR
+                    for spectrum_region in window[effect]:  # eg NGC, SGC
+                        for i, seed in enumerate(window_options["seeds"]):
+                            fn = get_stats_fn(
+                                kind=stat, catalog=fn_catalog_options, **(fn_window_options | {"extra": f"{effect}_seed={seed}", "region": spectrum_region})
+                            )
+                            tools.write_stats(fn, window[effect][spectrum_region][i])
 
         # Covariance matrix
         funcs = {'covariance_mesh2_spectrum': compute_covariance_mesh2_spectrum}
@@ -537,7 +643,8 @@ def main(**kwargs):
     parser.add_argument('--nran', help='number of random files to combine together (1-18 available)', type=int, default=None)
     parser.add_argument('--make_complete', help='make on-the-fly (completeness-weighted) complete catalogs', type=str, default=None)
     parser.add_argument('--expand_randoms', help='expand catalog of randoms; provide version of parent randoms (must be registered in get_catalog_fn)', type=str, default=None)
-    parser.add_argument('--stats_dir',  help='base directory for measurements, default is SCRATCH', type=str, default=Path(os.getenv('SCRATCH')) / 'measurements')
+    meas_dir = Path(os.getenv('SCRATCH')) / 'measurements'
+    parser.add_argument('--stats_dir',  help=f'base directory for measurements, default is {meas_dir}', type=str, default=meas_dir)
     parser.add_argument('--stats_extra',  help='extra string to include in measurement filename', type=str, default='')
     parser.add_argument('--combine', help='combine measurements in two regions', type=str, nargs='*', default=None, choices=['mesh2_spectrum', 'mesh3_spectrum', 'recon_particle2_correlation', 'window_mesh2_spectrum', 'window_mesh3_spectrum'])
 

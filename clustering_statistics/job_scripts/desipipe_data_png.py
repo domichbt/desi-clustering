@@ -65,8 +65,8 @@ def setup_queue():
 
 
 def run_stats(cat_dir=None, stats_dir=None, tracer='LRG', zranges=[0.4, 1.1], weights=['default-fkp'], regions=['NGC','SGC'], stats=['mesh2_spectrum'], **kwargs):
-    # Everything inside this function will be executed on the compute nodes;
-    # This function must be self-contained; and cannot rely on imports from the outer scope.
+    """" Everything inside this function will be executed on the compute nodes; This function must be self-contained; 
+         and cannot rely on imports from the outer scope. """
     import os
     import sys
     import functools
@@ -93,9 +93,8 @@ def run_stats(cat_dir=None, stats_dir=None, tracer='LRG', zranges=[0.4, 1.1], we
                            mesh2_spectrum={'cut': False}, window_mesh2_spectrum={'cut': False})
             compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, analysis='local_png', **options)
 
-
 def postprocess_stats(cat_dir=None, stats_dir=None, tracer='LRG', zranges=[0.4, 1.1], weights=['default-fkp'], stats=['mesh2_spectrum'], postprocess=['combine_regions'], **kwargs):
-    from clustering_statistics import postprocess_stats_from_options
+    from clustering_statistics import postprocess_stats_from_options, tools
     for weight in weights:
         get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
         options = dict(catalog=dict(cat_dir=cat_dir, tracer=tracer, zrange=zranges, weight=weight, ext='fits'), 
@@ -108,6 +107,7 @@ def collect_argparser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--interactive', action='store_true', help='Whether to run in interactive mode (without spawning jobs with desipipe).')
     parser.add_argument('--blinded', action='store_true', help='Run with blinded data or not.')
+    parser.add_argument('--new_wsys', action='store_true', help='Whether to compute also with the new imaging systematic weights or not.')
     args = parser.parse_args()
     logger.info(args)
     return args
@@ -117,16 +117,16 @@ if __name__ == '__main__':
     """
     # To run interactively on NERSC, use the following commands:
 
-    salloc -N 1 -C "gpu&hbm80g" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
-
-    salloc -N 1 -C "gpu" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
-    
+    # salloc -N 1 -C "gpu" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
     # source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main  # don't forget this to load environment variables
     # module unload desi-clustering
+    # srun -n 4 python desipipe_data_png.py --interactive --blinded
     
+    # For Edmond:
+    salloc -N 1 -C "gpu&hbm80g" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
     source /global/homes/e/edmondc/.bash_profile
-    
     srun -n 4 python desipipe_data_png.py --interactive --blinded
+    
     """
     from clustering_statistics import setup_logging
     from mpi4py import MPI
@@ -149,9 +149,9 @@ if __name__ == '__main__':
             #if tracer in ['LRG']: _tm = tm
             return _tm.python_app(run_stats)
 
-    todo = ['mesh2_spectrum'] #, 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
+    stats = ['mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
     postprocess = ['combine_regions']
-    logger.info(f'Running stats {todo} and postprocess {postprocess}')
+    logger.info(f'Running stats {stats} and postprocess {postprocess}')
     
     cat_dir = Path('/global/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/LSScats/v2/fNL/')
     stats_dir = Path(os.getenv('SCRATCH', '.')) / 'DR2_local_png' / 'measurements' / 'loa-v1/v2/fNL'
@@ -170,18 +170,25 @@ if __name__ == '__main__':
     regions = ['NGC', 'SGC', 'N', 'NGCnoN', 'SGCnoDES', 'DES'][:2]  # + ['ACT_DR6', 'PLANCK_PR4'] + [f'GAL0{i}' for i in [40, 60]]
     logger.info(f'Running on regions: {regions}')
 
-    for tracer in ['LRG', 'LRG_zcmb', 'ELGnotqso', 'QSO', 'QSO_zcmb', ('LRG', 'QSO'), ('LRG', 'ELGnotqso'), ('ELGnotqso', 'QSO')][:1]:
+    #tracers = ['LRG', 'LRG_zcmb', 'ELGnotqso', 'QSO', 'QSO_zcmb', ('LRG', 'QSO'), ('LRG', 'ELGnotqso'), ('ELGnotqso', 'QSO')]
+    tracers = ['LRG', 'QSO', ('LRG', 'QSO')][1:]
+
+    for tracer in tracers:
         from clustering_statistics import tools
         logger.info(tracer)
         zranges = tools.propose_fiducial(kind='zranges', tracer=tracer, analysis='local_png')
         #zranges += tools.propose_fiducial(kind='zranges', tracer=tracer)
         logger.info(f'zranges: {zranges}')
 
-        weights = ['default-fkp-oqe', 'default-fkp']
-        # get_run_stats()(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=regions, stats=todo)
+        weights = ['default-fkp-oqe', 'default-fkp'][:1]
+        get_run_stats()(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=regions, stats=stats)
         
-        # if postprocess:
-        #    postprocess_stats(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, postprocess=postprocess, stats=todo)
+        if postprocess:
+            postprocess_stats(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, postprocess=postprocess, stats=stats)
+
+
+        # Technically this is redshift depends.. but on the randoms that should not change because it is normalize to one on each redshift bins.
+        # Such that the geometric window + RIC and analytical covaraince should be the same ?
 
         # Choice of imaging systematics avaialble in the catalogs: https://desi.lbl.gov/trac/wiki/keyprojects/Y3-DR/LSScat/imaging_systematics
         if tracer in ['LRG', 'LRG_zcmb']:
@@ -195,7 +202,7 @@ if __name__ == '__main__':
         else:
             weights = []
         
-        get_run_stats()(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=regions, stats=['mesh2_spectrum'])
+        #get_run_stats()(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=regions, stats=['mesh2_spectrum'])
 
-        if postprocess:
-           postprocess_stats(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, postprocess=postprocess, stats=['mesh2_spectrum'])
+        #if postprocess:
+        #   postprocess_stats(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, postprocess=postprocess, stats=['mesh2_spectrum'])
