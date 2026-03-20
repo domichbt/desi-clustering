@@ -93,6 +93,7 @@ def recon_output(get_catalog_fn=None, get_stats_fn=tools.get_stats_fn,
             # fn_catalog_options = {tracer: catalog_options[tracer] | dict(zrange=zrange[tracer]) for tracer in tracers}
     return zdata, zrandoms
 
+
 def compute_reconstruction_cpu(get_data_randoms, mattrs=None, mode='recsym', bias=2.0, smoothing_radius=15., mpicomm=None):
     """
     Run density field reconstruction using :mod:`pyrecon` (CPU/MPI).
@@ -167,6 +168,7 @@ def _make_list_zrange(zranges):
     if np.ndim(zranges[0]) == 0:
         zranges = [zranges]
     return list(zranges)
+
 
 def recon_output_cpu(get_catalog_fn=None, get_stats_fn=tools.get_stats_fn,
                                 read_clustering_catalog=tools.read_clustering_catalog,

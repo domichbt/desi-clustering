@@ -37,6 +37,7 @@ def test_stats_fn(stats=['mesh2_spectrum']):
             _catalog_options.pop('tracer')
             zrange = _catalog_options.pop('zrange')
             fn2 = tools.get_stats_fn(kind=stat, catalog={'LRG': _catalog_options | dict(zrange=zrange[0]), 'ELG': _catalog_options | dict(zrange=zrange[1])}, **kw)
+            assert 'mesh2_spectrum_poles_LRGxELG_z0.4-0.5_NGC_weight-default-FKP' in str(fn1)
             assert fn2 == fn1, f'{fn2} != {fn1}'
 
 
@@ -341,8 +342,10 @@ if __name__ == '__main__':
     #config.update('jax_platform_name', 'cpu')
 
     setup_logging()
+
     #jax.distributed.initialize()
-    test_complete_catalog()
+    test_stats_fn()
+    #test_complete_catalog()
     #test_expand_randoms_catalog()
     #test_complete_stats()
     #test_expand_stats()

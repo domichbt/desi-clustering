@@ -619,7 +619,7 @@ def _unzip_catalog_options(catalog):
     return toret
 
 
-def _zip_catalog_options(catalog, squeeze=True):
+def _zip_catalog_options(catalog, squeeze=True, unique=True):
     """From {tracer: {nran:..., zrange: ...}}, return {tracer: tuple or single tracer if same, nran: tuple or single number if same}"""
     tracers = tuple(catalog.keys())
     toret = {key: [] for tracer in tracers for key in catalog[tracer]}
@@ -627,6 +627,7 @@ def _zip_catalog_options(catalog, squeeze=True):
     for tracer in tracers:
         for key in toret:
             value = catalog[tracer].get(key, None)
+            if unique and value in toret[key]: continue
             toret[key].append(value)
             num[key] += 1
     toret = {key: tuple(value) if len(tracers) > 1 or not squeeze else value[0] for key, value in toret.items()}
@@ -973,13 +974,12 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', pro
         catalog_options = _merge_catalog_options(catalog_options, {key: kwargs.pop(key) for key in list(kwargs) if key in _default_options}, zipped=[None, True])
         for tracer in catalog_options:
             catalog_options[tracer].setdefault('imock', None)
-    catalog_options = _zip_catalog_options(catalog_options, squeeze=False)
-    imock = catalog_options['imock']
-    if imock[0] and imock[0] == '*':
-        ntracers = len(catalog_options['tracer'])
-        fns = [get_stats_fn(stats_dir=stats_dir, project=project, kind=kind, auw=auw, cut=cut, ext=ext, extra=extra, catalog=catalog_options | dict(imock=(imock,) * ntracers), **kwargs) for imock in range(2001)]
+    imock = next(iter(catalog_options.values()))['imock']
+    if imock and imock == '*':
+        fns = [get_stats_fn(stats_dir=stats_dir, project=project, kind=kind, auw=auw, cut=cut, ext=ext, extra=extra, catalog=catalog_options, imock=imock, **kwargs) for imock in range(2001)]
         return [fn for fn in fns if os.path.exists(fn)]
 
+    catalog_options = _zip_catalog_options(catalog_options, squeeze=False, unique=True)
     stats_dir = Path(stats_dir) / project
 
     def join_if_not_none(f, key):
