@@ -36,7 +36,6 @@ tm80 = tm.clone(provider=dict(provider='nersc', time='02:00:00',
 tmw = tm.clone(scheduler=dict(max_workers=1), provider=dict(provider='nersc', time='00:10:00',
                 mpiprocs_per_worker=2250, nodes_per_worker=25, output=output, error=error, stop_after=1, constraint='cpu'))
 
-
 def run_stats(tracer='LRG', project='', version='holi-v1-altmtl', complete=False, imocks=[201], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], analysis='full_shape', ibatch=None, **kwargs):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
@@ -95,10 +94,10 @@ if __name__ == '__main__':
     #stats = ['window_mesh2_spectrum']
     #stats = ['covariance_mesh2_spectrum']
     #stats = ['window_mesh3_spectrum']
-    postprocess = ['combine_regions']
+    #postprocess = ['combine_regions']
     #postprocess = ['rotation_mesh2_spectrum']
     imocks = np.arange(1001)
-    imocks = [201]
+    imocks = [266]
 
     # stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
     # version = 'holi-v1-altmtl'
@@ -109,7 +108,7 @@ if __name__ == '__main__':
     version = 'holi-v3-altmtl'
     
 
-    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO']:
+    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO'][-1:]:
         if False:
             exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=list(range(1001)))[:2]
             imocks = exists[1]['imock']

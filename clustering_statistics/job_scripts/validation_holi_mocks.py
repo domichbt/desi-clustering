@@ -40,6 +40,7 @@ def run_stats(tracer='LRG', version='holi-v1-altmtl', weight='default-FKP', imoc
         for region in regions:
             options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight, imock=imock), mesh2_spectrum={'cut': True, 'auw': True if 'altmtl' in version else None})
             options = fill_fiducial_options(options)
+            options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran'])}
             compute_stats_from_options(stats, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), cache=cache, **options)
         jax.experimental.multihost_utils.sync_global_devices('measurements')
         for region_comb, regions in tools.possible_combine_regions(regions).items():
@@ -49,11 +50,13 @@ def run_stats(tracer='LRG', version='holi-v1-altmtl', weight='default-FKP', imoc
 
 if __name__ == '__main__':
 
-    imocks = 451 + np.arange(25)
+    imocks = 0 + np.arange(20)
 
-    stats_dir = Path(os.getenv('SCRATCH')) / 'holi_mocks_validation'
+    #stats_dir = Path(os.getenv('SCRATCH')) / 'holi_mocks_validation'
+    stats_dir = Path("/global/cfs/projectdirs/desi/mocks/cai/mock-benchmark-dr2/summary_statistics/cutsky/")
 
     for tracer in ['LRG']:
-        for weight in ['default_compntile', 'default']:
-            run_stats(tracer, version='holi-v1-complete', weight=weight, imocks=imocks, stats_dir=stats_dir)
-        run_stats(tracer, version='holi-v1-altmtl', weight=weight, imocks=imocks, stats_dir=stats_dir)
+        #for weight in ['default_compntile', 'default']:
+        #    run_stats(tracer, version='holi-v3-complete', weight=weight, imocks=imocks, stats_dir=stats_dir)
+        weight = 'default'
+        run_stats(tracer, version='holi-v3-altmtl', weight=weight, imocks=imocks, stats_dir=stats_dir)
