@@ -1,6 +1,8 @@
 """
-salloc -N 1 -C "gpu&hbm80g" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
+salloc -N 1 -C "gpu&hbm80g" -t 01:00:00 --gpus 4 --qos interactive --account desi_g
 source /global/common/software/desi/users/adematti/cosmodesi_environment.sh new
+module unload desi-clustering
+cd ~/dev/desi-clustering/clustering_statistics
 srun -n 4 python tests/test-recon.py
 """
 import os
@@ -261,9 +263,9 @@ def test_recon_clustering(stat=['recon_particle2_correlation', 'recon_mesh2_spec
 def check_cellsize_recon(stat=['recon_particle2_correlation', 'recon_mesh2_spectrum']):
     """Run recon measurements with varying reconstruction cell size to check stability."""
     stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
-    cellsizes = [4,6]#[8, 10, 12]
+    cellsizes = [4]#[]4,
     nran = 18
-    boxsize = 10000.
+    boxsize = 6000.
     for tracer in ['ELG_LOPnotqso']:
         zrange = tools.propose_fiducial('zranges', tracer)[0]
         for region in ['NGC', 'SGC']:
