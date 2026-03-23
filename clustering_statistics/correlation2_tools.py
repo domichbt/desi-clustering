@@ -75,7 +75,7 @@ def compute_angular_upweights(*get_data):
     return auw
 
 
-def compute_particle2_correlation(*get_data_randoms, auw=None, cut=None, battrs: dict=None):
+def compute_particle2_correlation(*get_data_randoms, auw=None, cut=None, battrs: dict=None, zeff: dict=None):
     """
     Compute two-point correlation function using :mod:`cucount.jax`.
 
@@ -91,6 +91,9 @@ def compute_particle2_correlation(*get_data_randoms, auw=None, cut=None, battrs:
         If provided, apply a theta-cut of (0, 0.05) in degress.
     battrs : dict, optional
         Bin attributes for cucount.jax.BinAttrs. If None, default bins are used. See cucount.jax.BinAttrs.
+    zeff : dict, optional
+        Optional arguments for computing effective redshift.
+        Default is ``{'cellsize': 10.}`` (density computed with ``cellsize = 10.``)
 
     Returns
     -------
@@ -100,7 +103,28 @@ def compute_particle2_correlation(*get_data_randoms, auw=None, cut=None, battrs:
     from cucount.jax import Particles, BinAttrs, WeightAttrs, SelectionAttrs, MeshAttrs, count2, setup_logging
     from lsstypes import Count2, Count2Correlation
 
+    if zeff is None: zeff = {'boxpad': 1.1, 'cellsize': 10.}
+    kw_zeff = dict(zeff)
+
+    # First: effective redshift
+    from .spectrum2_tools import prepare_jaxpower_particles, compute_fkp_effective_redshift
+    from jaxpower import create_sharding_mesh
+
+    def merge_randoms(catalog):
+        if not isinstance(catalog, (tuple, list)):
+            return catalog
+        return catalog[0].concatenate(catalog)
+
+    get_randoms = [lambda: {'randoms': merge_randoms(_get_data_randoms()['randoms'])} for _get_data_randoms in get_data_randoms]
+    with create_sharding_mesh(meshsize=kw_zeff.get('meshsize', None)):
+        all_particles = prepare_jaxpower_particles(*get_randoms, mattrs=kw_zeff, add_randoms=['IDS'])
+        all_randoms = [particles['randoms'] for particles in all_particles]
+        seed = [(42, randoms.extra['IDS']) for randoms in all_randoms]
+        zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, split=seed, resampler='cic', return_fraction=True)
+        del all_particles, all_randoms
+
     with jax.make_mesh((jax.device_count(),), axis_names=('x',), axis_types=(jax.sharding.AxisType.Auto,)):
+
         all_data, all_randoms, all_shifted = [], [], []
 
         def get_pw(catalog):
@@ -178,21 +202,22 @@ def compute_particle2_correlation(*get_data_randoms, auw=None, cut=None, battrs:
 
         DS, SD, SS, RR = [], [], [], []
         iran = 0
-        for all_randoms, all_shifted in zip(zip(*all_randoms, strict=True), zip(*all_shifted, strict=True), strict=True):
+        for all_randoms_i, all_shifted_i in zip(zip(*all_randoms, strict=True), zip(*all_shifted, strict=True), strict=True):
             if jax.process_index() == 0:
                 logger.info(f'Processing random {iran:d}.')
             iran += 1
-            RR.append(get_counts(*all_randoms))
-            if all(shifted is not None for shifted in all_shifted):
-                SS.append(get_counts(*all_shifted))
+            RR.append(get_counts(*all_randoms_i))
+            if all(shifted is not None for shifted in all_shifted_i):
+                SS.append(get_counts(*all_shifted_i))
             else:
-                all_shifted = all_randoms
+                all_shifted_i = all_randoms_i
                 SS.append(RR[-1])
-            DS.append(get_counts(all_data[0], all_shifted[-1]))
-            SD.append(get_counts(all_shifted[0], all_data[-1]))
+            DS.append(get_counts(all_data[0], all_shifted_i[-1]))
+            SD.append(get_counts(all_shifted_i[0], all_data[-1]))
 
     DS, SD, SS, RR = (types.sum(XX) for XX in [DS, SD, SS, RR])
     correlation = Count2Correlation(estimator='landyszalay', DD=DD, DS=DS, SD=SD, SS=SS, RR=RR)
+    correlation.attrs.update(zeff=zeff / norm_zeff, norm_zeff=norm_zeff)
     return correlation
 
 

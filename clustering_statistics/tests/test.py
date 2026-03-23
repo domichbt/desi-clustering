@@ -110,6 +110,23 @@ def test_recon(stat='recon_particle2_correlation'):
             catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zrange, region=region, imock=451, nran=2)
             catalog_options.update(expand={'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=catalog_options['nran'])})
             compute_stats_from_options(stat, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), mesh2_spectrum={}, particle2_correlation={})
+            fn = tools.get_stats_fn(stats_dir=stats_dir, catalog=catalog_options)
+            assert np.allclose(types.read(fn).attrs['zeff'], 0.5094069545592056)
+
+
+def test_correlation():
+    stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
+    stats = ['particle2_correlation']
+
+    for tracer in ['LRG']:
+        zrange = tools.propose_fiducial('zranges', tracer)[0]
+        for region in ['NGC', 'SGC']:
+            catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zrange, region=region, imock=451, nran=2)
+            catalog_options.update(expand={'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=catalog_options['nran'])})
+            #compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), particle2_correlation={})
+
+    options = dict(catalog=catalog_options, combine_regions={'stats': ['particle2_correlation']})
+    postprocess_stats_from_options(['combine_regions'], get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), **options)
 
 
 def test_complete_catalog():
@@ -251,17 +268,18 @@ def test_window3(stats=['mesh3_spectrum']):
 
 def test_covariance():
     stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
-    stats = ['mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
+    stats = ['mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum'][-1:]
+    zranges = [(0.8, 1.1)]
+
     for tracer in ['LRG', 'ELG_LOPnotqso']:
-        zranges = [(0.8, 1.1)]
         for region in ['NGC', 'SGC'][:1]:
             catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default-FKP', nran=1)
-            compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), mesh2_spectrum={'auw': True, 'cut': True})
+            compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), analysis='png_local')
+
     for tracer in [('LRG', 'ELG_LOPnotqso')]:
-        zranges = [(0.8, 1.1)]
         for region in ['NGC', 'SGC'][:1]:
             catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default-FKP', nran=1)
-            compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), mesh2_spectrum={'auw': True, 'cut': True})
+            compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), analysis='png_local')
 
 
 def test_rotation():
@@ -343,8 +361,11 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    #jax.distributed.initialize()
-    test_stats_fn()
+    jax.distributed.initialize()
+    #test_correlation()
+    test_covariance()
+    exit()
+    #test_stats_fn()
     #test_complete_catalog()
     #test_expand_randoms_catalog()
     #test_complete_stats()

@@ -528,9 +528,8 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
         window = types.read(fn).at.observable.match(data.get(**labels))
         windows.append(window)
     window = pack_stats(windows, **joint_labels)
-    print(covariance_options)
     # Analytic covariances
-    if covariance_options['source'] == 'jaxpower':
+    if covariance_options['source'] in ['jaxpower', 'rascalc']:
         # WARNING: not tested yet!
         full_tracers = []
         for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
