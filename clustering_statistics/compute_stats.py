@@ -627,7 +627,7 @@ def main(**kwargs):
     """
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--stats', help='what do you want to compute?', type=str, nargs='*', choices=['mesh2_spectrum', 'mesh3_spectrum', 'recon_particle2_correlation', 'window_mesh2_spectrum', 'window_mesh3_spectrum'], default=['mesh2_spectrum'])
+    parser.add_argument('--stats', help='what do you want to compute?', type=str, nargs='*', choices=['mesh2_spectrum', 'mesh3_spectrum', 'particle2_correlation', 'recon_particle2_correlation', 'window_mesh2_spectrum', 'window_mesh3_spectrum'], default=['mesh2_spectrum'])
     parser.add_argument('--version', help='catalog version; e.g. holi-v1-altmtl', type=str, default=None)
     parser.add_argument('--cat_dir', help='where to find catalogs', type=str, default=None)
     parser.add_argument('--tracer', help='tracer(s) to be selected - e.g. LRG ELG for cross-correlation', nargs='*', type=str, default='LRG')
@@ -646,7 +646,7 @@ def main(**kwargs):
     meas_dir = Path(os.getenv('SCRATCH')) / 'measurements'
     parser.add_argument('--stats_dir',  help=f'base directory for measurements, default is {meas_dir}', type=str, default=meas_dir)
     parser.add_argument('--stats_extra',  help='extra string to include in measurement filename', type=str, default='')
-    parser.add_argument('--combine', help='combine measurements in two regions', type=str, nargs='*', default=None, choices=['mesh2_spectrum', 'mesh3_spectrum', 'recon_particle2_correlation', 'window_mesh2_spectrum', 'window_mesh3_spectrum'])
+    parser.add_argument('--combine', help='combine measurements in two regions', type=str, nargs='*', default=None, choices=['mesh2_spectrum', 'mesh3_spectrum', 'particle2_correlation', 'recon_particle2_correlation', 'window_mesh2_spectrum', 'window_mesh3_spectrum'])
 
     args = parser.parse_args()
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
