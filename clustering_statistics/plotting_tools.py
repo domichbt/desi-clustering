@@ -87,7 +87,7 @@ def plot_stats(kind, versions, tracer, zrange, region, stats_dir, project='', el
         means, covs = get_means_covs('mesh3_spectrum', versions, tracer, zrange, region, stats_dir, project=project, rebin=rebin)
         versions = list(means)
         if title is None:
-            lax[0].set_title(f'{tracer} in {zrange[0]:.1f} < z < {zrange[1]:.1f}')
+            lax[0].set_title(f'{tracer} in {region} {zrange[0]:.1f} < z < {zrange[1]:.1f}')
         else:
             lax[0].set_title(title)
         for ill, ell in enumerate(ells):
