@@ -125,6 +125,8 @@ if __name__ == '__main__':
     # For Edmond:
     salloc -N 1 -C "gpu&hbm80g" -t 02:00:00 --gpus 4 --qos interactive --account desi_g
     source /global/homes/e/edmondc/.bash_profile
+    export HDF5_USE_FILE_LOCKING=TRUE
+    
     srun -n 4 python desipipe_data_png.py --interactive --blinded
     
     """
@@ -149,8 +151,16 @@ if __name__ == '__main__':
             #if tracer in ['LRG']: _tm = tm
             return _tm.python_app(run_stats)
 
+
+    # https://github.com/cosmodesi/desi-clustering/pull/34
+    # window_mesh2_spectrum_fm
+    # check the propose fiducial ! 
+
     stats = ['mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
     postprocess = ['combine_regions']
+
+    #postprocess = None
+
     logger.info(f'Running stats {stats} and postprocess {postprocess}')
     
     cat_dir = Path('/global/cfs/cdirs/desi/survey/catalogs/DA2/LSS/loa-v1/LSScats/v2/fNL/')
@@ -171,7 +181,7 @@ if __name__ == '__main__':
     logger.info(f'Running on regions: {regions}')
 
     #tracers = ['LRG', 'LRG_zcmb', 'ELGnotqso', 'QSO', 'QSO_zcmb', ('LRG', 'QSO'), ('LRG', 'ELGnotqso'), ('ELGnotqso', 'QSO')]
-    tracers = ['LRG', 'QSO', ('LRG', 'QSO')][1:]
+    tracers = ['LRG', 'QSO', ('LRG', 'QSO')][:]
 
     for tracer in tracers:
         from clustering_statistics import tools
@@ -187,20 +197,20 @@ if __name__ == '__main__':
             postprocess_stats(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, postprocess=postprocess, stats=stats)
 
 
-        # Technically this is redshift depends.. but on the randoms that should not change because it is normalize to one on each redshift bins.
-        # Such that the geometric window + RIC and analytical covaraince should be the same ?
+        
+        # Recompute everything it cost almost nothing to do it ...  (thecnically it hsould be super close but we are not comptational limited here ...)
 
         # Choice of imaging systematics avaialble in the catalogs: https://desi.lbl.gov/trac/wiki/keyprojects/Y3-DR/LSScat/imaging_systematics
-        if tracer in ['LRG', 'LRG_zcmb']:
-            weights = ['default-fkp-oqe-wsys-imlin_finezbin_allebvcmb']
-            if 'zcmb' in tracer:
-                weights += ['default-fkp-oqe-wsys-imlin_finezbin_allebv']
-        elif tracer in ['ELGnotqso']:
-            weights = ['default-fkp-oqe-wsys-imlin_finezbin_nodebv']
-        elif tracer == ('LRG', 'QSO'):
-            weights = [('default-fkp-oqe-wsys-imlin_finezbin_allebvcmb', 'default-fkp-oqe')]
-        else:
-            weights = []
+        # if tracer in ['LRG', 'LRG_zcmb']:
+        #     weights = ['default-fkp-oqe-wsys-imlin_finezbin_allebvcmb']
+        #     if 'zcmb' in tracer:
+        #         weights += ['default-fkp-oqe-wsys-imlin_finezbin_allebv']
+        # elif tracer in ['ELGnotqso']:
+        #     weights = ['default-fkp-oqe-wsys-imlin_finezbin_nodebv']
+        # elif tracer == ('LRG', 'QSO'):
+        #     weights = [('default-fkp-oqe-wsys-imlin_finezbin_allebvcmb', 'default-fkp-oqe')]
+        # else:
+        #     weights = []
         
         #get_run_stats()(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=regions, stats=['mesh2_spectrum'])
 
