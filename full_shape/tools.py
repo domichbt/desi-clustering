@@ -645,11 +645,13 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
         # FIXME if there are 3pt-covariances
         source = covariance_options['source']
         # FIXME
-        if source != 'jaxpower': source = f'_{source}'
+        if source == 'jaxpower': source = ''
+        else: source = f'_{source}'
         for tracers in all_combinations:
             if all(tracer == tracers[0] for tracer in tracers):
                 tracers = tracers[0]
             fn = get_stats_fn(kind=f'covariance_{stat}' + source, **(file_kw | dict(tracer=tracers)))
+            print(fn)
             if fn.exists():
                 covariances.append(types.read(fn))
         if not covariances:
