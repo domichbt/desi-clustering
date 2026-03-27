@@ -922,6 +922,10 @@ def run_preliminary_fit_mesh2_spectrum(data: types.Mesh2SpectrumPoles, window: t
     covariance = covariance.at.observable.match(data)
     z = window.observable.get(ells=0).attrs['zeff']
 
+    import numpy as np
+    # FIXME
+    np.trapz = np.trapezoid
+
     from desilike.theories.galaxy_clustering import FixedPowerSpectrumTemplate, KaiserTracerPowerSpectrumMultipoles, REPTVelocileptorsTracerPowerSpectrumMultipoles
     from desilike.observables.galaxy_clustering import TracerPowerSpectrumMultipolesObservable
     from desilike.likelihoods import ObservablesGaussianLikelihood

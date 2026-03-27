@@ -8,6 +8,7 @@ import itertools
 
 import numpy as np
 import jax
+import jax.experimental.multihost_utils
 import lsstypes as types
 
 from . import tools

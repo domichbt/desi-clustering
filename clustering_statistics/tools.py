@@ -1036,6 +1036,9 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', pro
     corr_type = 'smu'
     battrs = kwargs.get('battrs', None)
     if battrs is not None: corr_type = ''.join(list(battrs))
+    jackknife = kwargs.get('jackknife', {}).get('nsplits', None)
+    if jackknife:
+        corr_type = f'{corr_type}_jackknife{jackknife:d}'
     if 'particle2_correlation' in kind:
         full = f'particle2_correlation_{corr_type}'
         if full not in kind:
@@ -1656,12 +1659,13 @@ def read_full_catalog(kind, wntile=None, concatenate=True,
         return rdw
 
 
-def write_stats(filename, stats):
+@default_mpicomm
+def write_stats(filename, stats, mpicomm=None):
     """Write summary statistics to file from process 0 only."""
     import jax
     filename = Path(filename)
     tmp_filename = filename.with_name(filename.stem + '.tmp' + filename.suffix)
-    if MPI.COMM_WORLD.rank == 0 and jax.process_index() == 0:
+    if mpicomm.rank == 0:
         stats.write(tmp_filename)
         logger.info(f'Writing {filename}')
         os.replace(tmp_filename, filename)
