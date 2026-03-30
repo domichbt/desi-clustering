@@ -2,7 +2,6 @@
 Script to create and spawn desipipe tasks to compute clustering measurements on abacus mocks.
 To create and spawn the tasks on NERSC, use the following commands:
 ```bash
-salloc -N 1 -C "gpu&hbm80g" -t 04:00:00 --gpus 4 --qos interactive --account desi_g
 source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
 python desipipe_abacus_mocks.py  # create the list of tasks
 desipipe tasks -q abacus_mocks  # check the list of tasks
@@ -36,7 +35,7 @@ tmw = tm.clone(scheduler=dict(max_workers=1), provider=dict(provider='nersc', ti
                 mpiprocs_per_worker=2250, nodes_per_worker=25, output=output, error=error, stop_after=1, constraint='cpu'))
 
 
-def run_stats(tracer='LRG', project='', version='abacus-2ndgen-complete', onthefly=None, imocks=[0], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], analysis='full_shape', regions=['NGC', 'SGC'], ibatch=None, postprocess=None, **kwargs):
+def run_stats(tracer='LRG', version='abacus-2ndgen-complete', onthefly=None, imocks=[0], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], ibatch=None, **kwargs):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
     import os
@@ -50,35 +49,28 @@ def run_stats(tracer='LRG', project='', version='abacus-2ndgen-complete', onthef
     try: jax.distributed.initialize()
     except RuntimeError: print('Distributed environment already initialized')
     else: print('Initializing distributed environment')
-    from clustering_statistics import tools, setup_logging, compute_stats_from_options, fill_fiducial_options, postprocess_stats_from_options
+    from clustering_statistics import tools, setup_logging, compute_stats_from_options, fill_fiducial_options
     setup_logging()
 
     cache = {}
     zranges = tools.propose_fiducial('zranges', tracer)
     for imock in imocks:
+        regions = ['NGC', 'SGC']
         for region in regions:
             options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True if 'altmtl' in version and onthefly is None else None}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
-
-            stats_dir_kws = dict(stats_dir=stats_dir, project=project)
             if onthefly == 'complete':
                 options['catalog']['complete'] = {}
-                get_stats_fn = functools.partial(tools.get_stats_fn, extra='complete', **stats_dir_kws)
+                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete')
             elif onthefly == 'reshuffle':
                 options['catalog']['reshuffle'] = {'merged_data_fn': tools.get_catalog_fn(kind='data', **(options['catalog'] | dict(region='ALL')))}
-                get_stats_fn = functools.partial(tools.get_stats_fn, extra='reshuffle', **stats_dir_kws)
+                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='reshuffle')
             else:
-                get_stats_fn = functools.partial(tools.get_stats_fn, **stats_dir_kws)
-
+                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
             options = fill_fiducial_options(options)
             if True: #onthefly:
                 for tracer in options['catalog']:
                     options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran']), 'from_data': ['Z', 'WEIGHT_SYS', 'FRAC_TLOBS_TILES']}
             compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
-       
-    # postprocess
-    if postprocess:
-        postprocess_options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, imock=imocks[0]), imocks=imocks, combine_regions={'stats': stats}, mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True})    
-        postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **postprocess_options)
 
 
 def postprocess_stats(tracer='LRG', version='abacus-2ndgen-complete', complete=False, imocks=[0], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', postprocess=['combine_regions'], **kwargs):
@@ -94,52 +86,34 @@ def postprocess_stats(tracer='LRG', version='abacus-2ndgen-complete', complete=F
 
 if __name__ == '__main__':
 
-    # mode = 'interactive'
+    mode = 'interactive'
     #mode = 'slurm'
-    # stats, postprocess = [], []
-    # stats = ['mesh2_spectrum'] # 'mesh3_spectrum']
+    stats, postprocess = [], []
+    stats = ['mesh2_spectrum'] # 'mesh3_spectrum']
     #stats = ['mesh3_spectrum']
     #stats = ['window_mesh2_spectrum']
     #stats = ['covariance_mesh2_spectrum']
     #stats = ['window_mesh3_spectrum']
     #postprocess = ['combine_regions']
     #postprocess = ['rotation_mesh2_spectrum']
-    # imocks = np.arange(3)
+    imocks = np.arange(3)
 
-    # stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
-    # #version = 'abacus-2ndgen-complete'
-    # version = 'abacus-2ndgen-altmtl'
-    # onthefly = 'reshuffle'
-    # #onthefly = 'complete'
-    # onthefly = None
-
-    # to run job
-    # mode = 'slurm'
-    mode = 'interactive'
-    stats, postprocess = [], []
-    stats = ['mesh2_spectrum']#, 'mesh3_spectrum']
-    postprocess = ['combine_regions']
-    imocks = np.arange(5)
-    # stats_dir = tools.base_stats_dir
-    stats_dir  = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' 
-    analysis = 'full_shape'
-    version = 'abacus-hf-dr2-v2-altmtl'
+    stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
+    #version = 'abacus-2ndgen-complete'
+    version = 'abacus-2ndgen-altmtl'
+    onthefly = 'reshuffle'
+    #onthefly = 'complete'
     onthefly = None
-    zranges = None
-    regions = ['NGC','SGC']#,'N','S','SnoDES','DES','ACT_DR6','PLANCK_PR4','GAL040','GAL060']
-    # regions = ['GAL040','GAL060']
-    project = f'{analysis}/base'
 
     for tracer in ['BGS', 'LRG', 'ELG', 'QSO'][1:]:
         tracer = tools.get_full_tracer(tracer, version=version)
-        if True:
+        if False:
             exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=list(range(1001)))[:2]
             imocks = exists[1]['imock']
             rerun = []
-            for zrange in tools.propose_fiducial('zranges', tracer, analysis=analysis):
-                for kind in stats:
-                    stats_kws = dict(kind=kind, basis= stats_dir=stats_dir, project=project, tracer=tracer, region='SGC', weight='default-FKP', zrange=zrange, version=version)
-                    rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, **stats_kws), test_if_readable=True, imock=list(range(1001)))
+            for zrange in tools.propose_fiducial('zranges', tracer):
+                for kind in ['mesh2_spectrum', 'mesh3_spectrum']:
+                    rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, kind=kind, stats_dir=stats_dir, tracer=tracer, region='GCcomb', weight='default-FKP', zrange=zrange, version=version), test_if_readable=True, imock=list(range(1001)))
                     rerun += [imock for imock in imocks if (imock in unreadable[1]['imock']) or (imock not in rexists[1]['imock'])]
             imocks = sorted(set(rerun))
 
@@ -150,23 +124,22 @@ if __name__ == '__main__':
             if any('window_mesh3' in stat for stat in stats):
                 _tm = tmw
             return run_stats if mode == 'interactive' else _tm.python_app(run_stats)
-       
-        run_stats_kws = dict(tracer=tracer, stats_dir=stats_dir, project=project, version=version, stats=stats, analysis=analysis, onthefly=onthefly, zranges=zranges, regions=regions, postprocess=postprocess)
+
         if any('window' in stat for stat in stats):
             _imocks = [0]
             nbatches = 1
             tasks = []
             for ibatch in range(nbatches):
-                task = get_run_stats()(imocks=_imocks, ibatch=(ibatch, nbatches), **run_stats_kws)
+                task = get_run_stats()(tracer, version=version, onthefly=onthefly, imocks=_imocks, stats_dir=stats_dir, stats=stats, ibatch=(ibatch, nbatches))
                 tasks.append(task)
             if nbatches >= 1:
                 # Add dependence on other tasks
-                get_run_stats()(imocks=_imocks, ibatch=nbatches, tasks=tasks, **run_stats_kws)
+                get_run_stats()(tracer, version=version, onthefly=onthefly, imocks=_imocks, stats_dir=stats_dir, stats=stats, ibatch=nbatches, tasks=tasks)
         elif any('covariance' in stat for stat in stats):
-            get_run_stats()(imocks=[0], **run_stats_kws)
+            get_run_stats()(tracer, version=version, onthefly=onthefly, imocks=[0], stats_dir=stats_dir, stats=stats)
         elif stats:
             batch_imocks = np.array_split(imocks, max(len(imocks) // 10, 1)) if len(imocks) else []
             for _imocks in batch_imocks:
-                get_run_stats()(imocks=_imocks, **run_stats_kws)
-        # if postprocess:
-        #     postprocess_stats(imocks=imocks, postprocess=postprocess, **run_stats_kws)
+                get_run_stats()(tracer, version=version, onthefly=onthefly, imocks=_imocks, stats_dir=stats_dir, stats=stats)
+        if postprocess:
+            postprocess_stats(tracer, version=version, onthefly=onthefly, imocks=imocks, stats_dir=stats_dir, postprocess=postprocess)

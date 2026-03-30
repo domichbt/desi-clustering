@@ -1288,7 +1288,6 @@ def expand_randoms(randoms, parent_randoms, data, from_randoms=('RA', 'DEC'), fr
         for column in from_data:
             randoms[column] = data[column][index]
         if 'FRAC_TLOBS_TILES' in special_columns:
-            # It would have been so much simpler if data had the column TILES!
             # Total random weights is FRAC_TLOBS_TILES * (WEIGHT_SYS * WEIGHT_COMP * WEIGHT_ZFAIL coming from z shuffling) * overall region-based normalization factor
             # Correct up to a given region-based normalization factor
             data_wtotp = data['WEIGHT_COMP'] * data['WEIGHT_SYS'] * data['WEIGHT_ZFAIL']
@@ -1481,11 +1480,11 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
 
             if zrange is not None:
                 catalog = catalog[(catalog['Z'] >= zrange[0]) & (catalog['Z'] < zrange[1])]
-                if np.any(catalog['NX']==0):
+                if np.any(catalog['NX'] == 0):
                     # remove entries with NX=0
                     if mpicomm.rank == 0:
-                        logger.info(f'Found and removed {(catalog['NX']==0).sum()} objects with NX=0 from {fn}')
-                    catalog = catalog[catalog['NX']!=0]
+                        logger.info(f'Found and removed {(catalog['NX'] == 0).sum()} objects with NX=0 from {fn}')
+                    catalog = catalog[catalog['NX'] != 0]
             if 'bitwise' in weight_type:
                 # ADM: I guess this is because we want to restrict to TILE-intersections where we have observed something?
                 catalog = catalog[(catalog['FRAC_TLOBS_TILES'] != 0)]
@@ -1549,7 +1548,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
         rdzw.append(catalog)
 
     if concatenate:
-        if len(rdzw) > 1: return rdzw[0]
+        if len(rdzw) == 1: return rdzw[0]
         return Catalog.concatenate(rdzw)
     else:
         return rdzw
@@ -1653,7 +1652,7 @@ def read_full_catalog(kind, wntile=None, concatenate=True,
         if bitwise_weights is not None: catalog['BITWEIGHT'] = bitwise_weights
         rdw.append(catalog)
     if concatenate:
-        if len(rdw) > 1: return rdw[0]
+        if len(rdw) == 1: return rdw[0]
         return Catalog.concatenate(rdw)
     else:
         return rdw

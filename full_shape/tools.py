@@ -684,7 +684,7 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
                 for ifn in ifns_exists:
                     # Join mesh2_spectrum, mesh3_spectrum, etc.
                     observables = [types.read(fn) for fn in all_fns[ifn]]
-                    observables = [_apply_project(observable, select)[0] if _with_project(observable) else observable for observable, in zip(observables, selects)]
+                    observables = [_apply_project(observable, select)[0] if _with_project(observable) else observable for observable, select in zip(observables, selects)]
                     mock = types.ObservableTree(observables, **joint_labels)
                     mocks.append(mock)
                 covariance = types.cov(mocks)
