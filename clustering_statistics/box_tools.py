@@ -349,7 +349,7 @@ def get_box_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements',
     _default_options = dict(version=None, tracer=None, cosmo=None, hod=None, zsnap=None, los='z', imock=None)
     catalog_options = kwargs.pop('catalog', {})
     if not catalog_options:
-        kwargs_options = {key: kwargs[key] for key, value in _default_options.items()}
+        kwargs_options = {key: kwargs.pop(key, value) for key, value in _default_options.items()}
         catalog_options = _unzip_catalog_options(kwargs_options)
     else:
         catalog_options = _merge_catalog_options(catalog_options, {key: kwargs.pop(key) for key in list(kwargs) if key in _default_options}, zipped=[None, True])
