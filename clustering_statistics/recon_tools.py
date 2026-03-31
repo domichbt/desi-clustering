@@ -41,7 +41,6 @@ def compute_reconstruction(get_data_randoms, mattrs=None, mode='recsym', bias=2.
     mattrs = mattrs or {}
     with create_sharding_mesh(meshsize=mattrs.get('meshsize', None)):
         particles = prepare_jaxpower_particles(get_data_randoms, mattrs=mattrs, return_inverse=True)[0]
-
         # Define FKP field = data - randoms
         fkp = FKPField(particles['data'], particles['randoms'])
         del particles
@@ -52,6 +51,7 @@ def compute_reconstruction(get_data_randoms, mattrs=None, mode='recsym', bias=2.
         cosmo = DESI()
         growth_rate = compute_fkp_effective_redshift(fkp.data, order=1, cellsize=None, func_of_z=cosmo.growth_rate)
         recon = jax.jit(IterativeFFTReconstruction, static_argnames=['los', 'halo_add', 'niterations'], donate_argnums=[0])(delta, growth_rate=growth_rate, bias=bias, los=None, halo_add=0)
+        #recon = IterativeFFTReconstruction(delta, growth_rate=growth_rate, bias=bias, los=None, halo_add=0)
         data_positions_rec = recon.read_shifted_positions(fkp.data.positions)
         assert mode in ['recsym', 'reciso']
         # RecSym = remove large scale RSD from randoms

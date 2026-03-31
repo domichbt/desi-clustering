@@ -8,6 +8,7 @@ import itertools
 
 import numpy as np
 import jax
+import jax.experimental.multihost_utils
 import lsstypes as types
 
 from . import tools
@@ -130,11 +131,14 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
     if with_stats_blinding:
         warnings.warn('Output clustering statistics will be blinded on-the-fly.\nIf you do not want blinding, pass "protected" in the "analysis" argument.')
     # Reconstruction
+    stat_recon_attrs = {}
     if with_recon:
         # data_rec, randoms_rec = {}, {}
+        stat_recon_attrs = {'recon_mode': [], 'recon_smoothing_radius': []}
         for tracer in tracers:
             recon_options = dict(options['recon'][tracer])
             # local sizes to select positions
+            for name in stat_recon_attrs: stat_recon_attrs[name].append(recon_options[name[len('recon_'):]])
             data[tracer]['POSITION_REC'], randoms_rec_positions = compute_reconstruction(lambda: {'data': data[tracer], 'randoms': Catalog.concatenate(randoms[tracer])}, **recon_options)
             start = 0
             for random in randoms[tracer]:
@@ -188,8 +192,10 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                     return {'data': zdata[tracer], 'randoms': zrandoms[tracer]}
 
                 correlation = compute_particle2_correlation(*[functools.partial(get_data, tracer) for tracer in tracers], **correlation_options)
-                if with_stats_blinding:
-                    correlation = tools.apply_blinding(correlation, tracers, zrange)
+                if with_stats_blinding and not recon:  # FIXME
+                    correlation = tools.apply_blinding(correlation, tracers, zrange=sum(zrange.values(), start=tuple()))
+                if recon:
+                    correlation.attrs.update(stat_recon_attrs)
                 fn = get_stats_fn(kind=stat, catalog=fn_catalog_options, **correlation_options)
                 tools.write_stats(fn, correlation)
 
@@ -218,6 +224,8 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                         fn = get_stats_fn(kind=stat, catalog=fn_catalog_options, **kw)
                         if with_stats_blinding:
                             spectrum[key] = tools.apply_blinding(spectrum[key], tracers, zrange=sum(zrange.values(), start=tuple()))
+                        if recon:
+                            spectrum.attrs.update(stat_recon_attrs)
                         tools.write_stats(fn, spectrum[key])
 
         jax.experimental.multihost_utils.sync_global_devices('spectrum')  # wait for the writer 
@@ -641,7 +649,7 @@ def main(**kwargs):
     parser.add_argument('--boxsize',  help='box size', type=float, default=None)
     parser.add_argument('--cellsize', help='cell size', type=float, default=None)
     parser.add_argument('--nran', help='number of random files to combine together (1-18 available)', type=int, default=None)
-    parser.add_argument('--make_complete', help='make on-the-fly (completeness-weighted) complete catalogs', type=str, default=None)
+    parser.add_argument('--make_complete', help='make on-the-fly (completeness-weighted) complete catalogs', action='store_true', default=None)
     parser.add_argument('--expand_randoms', help='expand catalog of randoms; provide version of parent randoms (must be registered in get_catalog_fn)', type=str, default=None)
     meas_dir = Path(os.getenv('SCRATCH')) / 'measurements'
     parser.add_argument('--stats_dir',  help=f'base directory for measurements, default is {meas_dir}', type=str, default=meas_dir)

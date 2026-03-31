@@ -91,7 +91,7 @@ def get_cosmology(cosmology_options: dict=None):
 
 
 
-def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, sigma8_fid=1.):
+def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, tracer=None, sigma8_fid=1.):
     """
     Build a dictionary of parameter priors.
 
@@ -116,6 +116,29 @@ def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, 
         :meth:`Parameter.update` (e.g. ``{'fixed': True}`` or ``{'prior': {...}}``).
     """
     params = {}
+    if model == 'bao':
+        tracer = get_simple_tracer(tracer)
+        recon = 'recon' in prior_basis
+        if tracer == 'BGS':
+            sigmapar, sigmaper = 10., 6.5
+            if recon: sigmapar, sigmaper = 8., 3.
+        elif tracer == 'LRG':
+            sigmapar, sigmaper = 9., 4.5
+            if recon: sigmapar, sigmaper = 6., 3.
+        elif tracer == 'LRG+ELG':
+            sigmapar, sigmaper = 9., 4.5
+            if recon: sigmapar, sigmaper = 6., 3.
+        elif tracer == 'ELG':
+            sigmapar, sigmaper = 8.5, 4.5
+            if recon: sigmapar, sigmaper = 6., 3.
+        elif tracer == 'QSO':
+            sigmapar, sigmaper = 9., 3.5
+            if recon: sigmapar, sigmaper = 6., 3.
+        sigmas = {'sigmas': (2., 2.), 'sigmapar': (sigmapar, 2.), 'sigmaper': (sigmaper, 1.)}
+        for name, value in sigmas.items():
+            params[name] = {'prior': {'dist': 'norm', 'loc': value[0], 'scale': value[1], 'limits': [0., 20.]}}
+        return params
+
     scale_eft = 12.5
     scale_sn0 = 2.0
     scale_sn2 = 5.0
@@ -188,7 +211,7 @@ def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, 
     return params
 
 
-def get_theory(stat: str, theory_options: dict, z: float, cosmology: object=None):
+def get_theory(stat: str, theory_options: dict, cosmology: object=None, data_attrs: dict=None, data=None):
     """
     Return a configured theory desilike calculator for the requested statistic.
 
@@ -198,28 +221,33 @@ def get_theory(stat: str, theory_options: dict, z: float, cosmology: object=None
         Statistic name, e.g. 'mesh2_spectrum' or 'mesh3_spectrum'.
     theory_options : dict
         Theory options dict containing at least 'model' and possibly other keys.
-    z : float
-        Effective redshift.
     cosmology : Cosmoprimo
         Cosmology calculator.
+    data_attrs : dict
+        Data attributes ('z', 'recon_mode', 'recon_smoothing_radius', 'tracers', ...).
 
     Returns
     -------
     theory : BaseCalculator
         Initialized theory object from desilike for the requested statistic.
     """
-    from desilike.theories.galaxy_clustering import (DirectPowerSpectrumTemplate, ShapeFitPowerSpectrumTemplate, REPTVelocileptorsTracerPowerSpectrumMultipoles,
-    FOLPSv2TracerPowerSpectrumMultipoles, FOLPSv2TracerBispectrumMultipoles)
+    from desilike.theories.galaxy_clustering import (DirectPowerSpectrumTemplate, ShapeFitPowerSpectrumTemplate, BAOPowerSpectrumTemplate, REPTVelocileptorsTracerPowerSpectrumMultipoles,
+    FOLPSv2TracerPowerSpectrumMultipoles, FOLPSv2TracerBispectrumMultipoles, DampedBAOWigglesTracerCorrelationFunctionMultipoles)
     theory_options = dict(theory_options)
     fiducial = get_fiducial()
     template = None
     theory_options.setdefault('cosmology', {'template': 'direct'})
-    if theory_options['cosmology']['template'] == 'direct':
+    cosmology_options = theory_options['cosmology']
+    z = data_attrs['z']
+    if cosmology_options['template'] == 'direct':
         template = DirectPowerSpectrumTemplate(fiducial=fiducial, cosmo=cosmology, z=z)
-    elif theory_options['cosmology']['template'] == 'shapefit':
+    elif cosmology_options['template'] == 'shapefit':
         template = ShapeFitPowerSpectrumTemplate(fiducial=fiducial, z=z)
+    elif cosmology_options['template'] == 'bao':
+        kw = {name: cosmology_options[name] for name in ['apmode', 'now'] if name in cosmology_options}
+        template = BAOPowerSpectrumTemplate(fiducial=fiducial, z=z, **kw)
     if template is None:
-        raise ValueError(f'template not found for {stat} and {repr(theory_options["template"])}')
+        raise ValueError(f'template not found for {stat} and {repr(cosmology_options["template"])}')
     theory = None
     if 'mesh2_spectrum' in stat:
         if theory_options['model'] == 'reptvelocileptors':
@@ -228,9 +256,10 @@ def get_theory(stat: str, theory_options: dict, z: float, cosmology: object=None
             kw = {name: theory_options[name] for name in ['damping', 'prior_basis', 'b3_coev', 'A_full']}
             theory = FOLPSv2TracerPowerSpectrumMultipoles(template=template, **kw, **theory_options.get('options', {}))
             sigma8_fid = fiducial.get_fourier().sigma8_z(of='delta_cb', z=z)
-            params = _get_default_theory_nuisance_priors(theory_options['model'], stat, prior_basis=kw['prior_basis'], b3_coev=kw['b3_coev'], sigma8_fid=sigma8_fid)
+            params = _get_default_theory_nuisance_priors(theory_options['model'], stat, prior_basis=kw['prior_basis'], b3_coev=kw['b3_coev'], sigma8_fid=sigma8_fid) | theory_options.get('params', {})
             for name, config in params.items():
-                theory.init.params[name].update(**config)
+                for param in theory.init.params.select(basename=name):
+                    param.update(**config)
             if theory_options['marg']:
                 for param in theory.init.params.select(basename=['alpha*', 'sn*']):
                     param.update(derived='.auto')
@@ -239,9 +268,30 @@ def get_theory(stat: str, theory_options: dict, z: float, cosmology: object=None
             kw = {name: theory_options[name] for name in ['damping', 'prior_basis']}
             theory = FOLPSv2TracerBispectrumMultipoles(template=template, **kw, **theory_options.get('options', {}))
             sigma8_fid = fiducial.get_fourier().sigma8_z(of='delta_cb', z=z)
-            params = _get_default_theory_nuisance_priors(theory_options['model'], stat, prior_basis=kw['prior_basis'], sigma8_fid=sigma8_fid)
+            params = _get_default_theory_nuisance_priors(theory_options['model'], stat, prior_basis=kw['prior_basis'], sigma8_fid=sigma8_fid) | theory_options.get('params', {})
             for name, config in params.items():
-                theory.init.params[name].update(**config)
+                for param in theory.init.params.select(basename=name):
+                    param.update(**config)
+    elif 'recon_particle2_correlation' in stat:
+        kw = {name: np.asarray(data_attrs.get(f'recon_{name}', None)).flat[0] for name in ['mode', 'smoothing_radius']}
+        kw = kw | {name: theory_options[name] for name in kw if name in theory_options}
+        if kw['mode'] is None: kw['mode'] = ''  # no reconstruction
+        kw['broadband'] = theory_options.get('broadband', 'pcs2')
+        params = _get_default_theory_nuisance_priors(theory_options['model'], stat, prior_basis=kw['mode'], tracer=data_attrs['tracers'][0]) | theory_options.get('params', {})
+        theory = DampedBAOWigglesTracerCorrelationFunctionMultipoles(template=template, **kw)
+        for name, config in params.items():
+            for param in theory.init.params.select(basename=name):
+                param.update(**config)
+        ells = getattr(data, 'ells', [0, 2, 4])
+        for ell in [0, 2, 4]:
+            if ell not in ells:
+                for param in theory.init.params.select(basename=f'*l{ell:d}_*'):
+                    param.update(fixed=True)
+        if len(ells) <= 1:
+            theory.init.params['dbeta'].update(fixed=True)
+        if theory_options['marg']:
+            for param in theory.init.params.select(basename=['al*', 'bl*']):
+                param.update(derived='.auto')
     if theory is None:
         raise ValueError(f'theory not found for {stat} and {repr(theory_options)}')
     return theory
@@ -313,6 +363,7 @@ def combine_covariances(covariances, observable):
     olabels = observable.labels(level=1)
     nblocks = len(olabels)
     value = [[None for i in range(nblocks)] for i in range(nblocks)]
+    observables = [None for i in range(nblocks)]
     for ilabel1, ilabel2 in itertools.product(range(nblocks), repeat=2):
         label1, label2 = (olabels[ilabel] for ilabel in [ilabel1, ilabel2])
         block = None
@@ -323,13 +374,14 @@ def combine_covariances(covariances, observable):
             if label1 in clabels and label2 in clabels:
                 i1, i2 = clabels.index(label1), clabels.index(label2)
                 block = covariance.value()[cumsizes[i1]:cumsizes[i1 + 1], cumsizes[i2]:cumsizes[i2 + 1]]
-                break
+                observables[i1] = covariance.observable.get([label1])
         if block is None:
             warnings.warn(f'block {label1}, {label2} not found, assuming it is 0')
             shape = tuple(observable.get(**label).size for label in [label1, label2])
             block = np.zeros(shape)
         value[ilabel1][ilabel2] = block
     value = np.block(value)
+    observable = types.join(observables)
     return types.CovarianceMatrix(observable=observable, value=value)
 
 
@@ -464,6 +516,34 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
             file_kw = kw | observable_options['catalog'] | {'tracer': full_tracer} | kwargs
             yield stat, labels, file_kw, dict(observable_options)
 
+    def _with_project(observable: types.ObservableTree):
+        return hasattr(observable, 'project')
+
+    def _apply_project(observable: types.ObservableTree, select: list=None):
+        # Project correlation function
+        data, windows = [], []
+        for _select in select:
+            _select = dict(_select)
+            ells = [_select.pop('ells')]
+            correlation = observable
+            RR = correlation.get('RR')
+            for coord_name, limits in _select.items():
+                if len(limits) == 3:  # apply binning only
+                    step = limits[2]
+                    edge = correlation.edges(coord_name)[0]
+                    rebin = int(np.rint(np.mean(step / (edge[..., 1] - edge[..., 0]))) + 0.5)
+                    correlation = correlation.select(**{coord_name: slice(0, None, rebin)})
+                #correlation = correlation.select(**{coord_name: tuple(limits[:2])})
+            pole, window = correlation.project(ells=ells, kw_window=dict(RR=RR))
+            data.append(pole)
+            windows.append(window)
+        data = types.join(data)
+        window = types.WindowMatrix(value=np.concatenate([window.value() for window in windows], axis=0),
+                                    observable=types.join([window.observable for window in windows]),
+                                    theory=windows[0].theory,
+                                    attrs=windows[0].attrs)
+        return data, window
+ 
     def _apply_select(observable: types.ObservableTree, select: list=None):
         """
         Apply a selection (k-range, ell selection) to an observable.
@@ -497,7 +577,7 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
         return observable
 
     # Loading data, window
-    all_data_fns, all_imocks, joint_labels = [], [], {'observables': [], 'tracers': []}
+    all_data_fns, all_imocks, joint_labels, selects = [], [], {'observables': [], 'tracers': []}, []
     for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
         file_kw = {'imock': None} | file_kw
         all_imocks.append(file_kw['imock'])
@@ -506,28 +586,44 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
         all_data_fns.append(fn)
         for name in joint_labels:
             joint_labels[name].append(labels[name])
-    cache_fn = get_cache_fn('data', dict(imocks=all_imocks))
-    data = get_from_cache(cache_fn)
-    if data is None:
+        selects.append(kw['stat'].get('select', None))
+    cache_data_fn = get_cache_fn('data', dict(imocks=all_imocks))
+    cache_window_fn = get_cache_fn('window', dict(imocks=all_imocks))
+    data = get_from_cache(cache_data_fn)
+    window = get_from_cache(cache_window_fn)
+    if data is None or window is None:
         if mpicomm.rank == 0:
-            data = []
-            for fns in all_data_fns:
-                data.append(types.mean([types.read(fn) for fn in fns]))
+            data, windows = [], []
+            for iobs, (stat, labels, file_kw, kw) in enumerate(iter_stat_tracer_combinations(observables_options)):
+                _data, _windows = [], []
+                for fn in all_data_fns[iobs]:
+                    observable = types.read(fn)
+                    if _with_project(observable):  # correlation function
+                        dw = _apply_project(observable, selects[iobs])
+                        _data.append(dw[0])
+                        _windows.append(dw[1])
+                    else:  # power spectrum
+                        _data.append(observable)
+                data.append(types.mean(_data))
+                if _windows:
+                    windows.append(_windows[0])
+                else:
+                    imock = file_kw.get('imock', None)
+                    if imock is not None:  # FIXME
+                        file_kw['imock'] = 0
+                    fn = get_stats_fn(kind=f'window_{stat}', **file_kw)
+                    windows.append(types.read(fn))
             # Join mesh2_spectrum, mesh3_spectrum, etc.
             data = pack_stats(data, **joint_labels)
-        data = mpicomm.bcast(data, root=0)
+            window = pack_stats(windows, **joint_labels)
+        data, window = mpicomm.bcast((data, window), root=0)
     if write_cache:
-        write_stats(cache_fn, data)
-    windows = []
+        write_stats(cache_data_fn, data)
+        write_stats(cache_window_fn, window)
     for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
-        data = data.at(**labels).replace(_apply_select(data.get(**labels), select=kw['stat'].get('select', None)))
-        imock = file_kw.get('imock', None)
-        if imock is not None:  # FIXME
-            file_kw['imock'] = 0
-        fn = get_stats_fn(kind=f'window_{stat}', **file_kw)
-        window = types.read(fn).at.observable.match(data.get(**labels))
-        windows.append(window)
-    window = pack_stats(windows, **joint_labels)
+        leaf = _apply_select(data.get(**labels), select=kw['stat'].get('select', None))
+        data = data.at(**labels).replace(leaf)
+        window = window.at.observable.at(**labels).match(data.get(**labels))
     # Analytic covariances
     if covariance_options['source'] in ['jaxpower', 'rascalc']:
         # WARNING: not tested yet!
@@ -547,10 +643,15 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
         covariances = []
         # Query all possible cross-covariances
         # FIXME if there are 3pt-covariances
+        source = covariance_options['source']
+        # FIXME
+        if source == 'jaxpower': source = ''
+        else: source = f'_{source}'
         for tracers in all_combinations:
             if all(tracer == tracers[0] for tracer in tracers):
                 tracers = tracers[0]
-            fn = get_stats_fn(kind=f'covariance_{stat}', **(file_kw | dict(tracer=tracers)))
+            fn = get_stats_fn(kind=f'covariance_{stat}' + source, **(file_kw | dict(tracer=tracers)))
+            print(fn)
             if fn.exists():
                 covariances.append(types.read(fn))
         if not covariances:
@@ -582,13 +683,16 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
             if mpicomm.rank == 0:
                 for ifn in ifns_exists:
                     # Join mesh2_spectrum, mesh3_spectrum, etc.
-                    mock = types.ObservableTree([types.read(fn) for fn in all_fns[ifn]], **joint_labels)
+                    observables = [types.read(fn) for fn in all_fns[ifn]]
+                    observables = [_apply_project(observable, select)[0] if _with_project(observable) else observable for observable, select in zip(observables, selects)]
+                    mock = types.ObservableTree(observables, **joint_labels)
                     mocks.append(mock)
                 covariance = types.cov(mocks)
                 covariance.attrs['nobs'] = len(mocks)
             covariance = mpicomm.bcast(covariance, root=0)
         if cache_fn is not None:
             write_stats(cache_fn, covariance)
+
     covariance = covariance.at.observable.match(data)
 
     factor, metadata = _get_covariance_correction_factor(covariance, observables_options, covariance_options)
@@ -611,6 +715,7 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
         window=window,
         covariance=covariance,
     )
+
     if unpack:
         return unpack_stats(likelihood)
     return likelihood
@@ -642,14 +747,14 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
     -------
     ObservablesGaussianLikelihood
     """
-    from desilike.observables.galaxy_clustering import TracerSpectrum2PolesObservable, TracerSpectrum3PolesObservable
+    from desilike.observables.galaxy_clustering import TracerSpectrum2PolesObservable, TracerSpectrum3PolesObservable, TracerCorrelation2PolesObservable
     from desilike.likelihoods import ObservablesGaussianLikelihood
     # likelihood_options: {'observables': [observable_options], 'covariance': {}}
     observables_options = likelihood_options['observables']
     covariance_options = likelihood_options.get('covariance', {})
     cosmology = get_cosmology(cosmology_options)
     if stats is None:
-        stats = get_stats(observables_options, covariance_options=covariance_options, unpack=False, get_stats_fn=get_stats_fn, cache_dir=cache_dir)
+        stats = get_stats(observables_options, covariance_options=covariance_options, unpack=False, get_stats_fn=get_stats_fn, cache_dir=cache_dir, cache_mode=cache_mode)
     data, windows, covariance = unpack_stats(stats)
     labels = covariance.observable.labels(level=1)
     observables = []
@@ -659,25 +764,27 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
             cls = TracerSpectrum2PolesObservable
         elif 'mesh3_spectrum' in stat:
             cls = TracerSpectrum3PolesObservable
+        elif 'particle2_correlation' in stat:
+            cls = TracerCorrelation2PolesObservable
         else:
             raise NotImplementedError(stat)
+        data_attrs = dict(data.attrs) | label
         for label, pole in window.observable.items(level=None):
-            z = pole.attrs['zeff']
-        theory = get_theory(stat, theory_options=observable_options['theory'], z=z, cosmology=cosmology)
+            data_attrs['z'] = pole.attrs['zeff']
+        theory = get_theory(stat, theory_options=observable_options['theory'], cosmology=cosmology, data_attrs=data_attrs, data=data)
         namespace = _str_from_observable_options(
             observable_options, level={'catalog': 1, 'stat': 0, 'theory': 0, 'covariance': 0})
-        for param in theory.init.params:
-            param.update(namespace=namespace)
         theory_params = theory.init.params
         observable = cls(data=data, window=window, theory=theory)
         observable()
-        if observable_options['emulator'] is not None:
+        if observable_options['emulator']['name']:
             assert cache_dir is not None, 'cache_dir must be provided for emulator'
             read_cache = cache_dir is not None and 'r' in cache_mode
             write_cache = cache_dir is not None and 'w' in cache_mode
             cache_dir = Path(cache_dir)
             _hash = _hash_options({name: observable_options[name] for name in ['theory', 'catalog']})
             _str_cosmology = str_from_cosmology_options(observable_options['theory']['cosmology'], level=100)
+            _str_cosmology += '_' + observable_options['emulator']['name']
             _str_theory = _str_from_observable_options(observable_options, level={'theory': 100, 'catalog': 2})
             cache_fn = cache_dir / f'emulator_{_str_cosmology}' / f'emulator_{_str_theory}_{_hash}.npy'
             from desilike.emulators import EmulatedCalculator, Emulator, TaylorEmulatorEngine
@@ -698,6 +805,8 @@ def get_single_likelihood(likelihood_options, stats: types.GaussianLikelihood=No
                     emulated_pt.save(cache_fn)
             theory.init.update(pt=emulated_pt)
             theory.init.params.update(theory_params)
+            for param in theory.init.params:
+                param.update(namespace=namespace)
         observables.append(observable)
     return ObservablesGaussianLikelihood(observables, covariance=covariance.value())
 
@@ -752,14 +861,18 @@ def propose_fiducial_observable_options(stat, tracer=None, zrange=None):
     """Propose fiducial fitting options for given statistics and tracer."""
     propose_fiducial = {'stat': {'kind': stat},
                         'catalog': {'weight': 'default-FKP'},
-                        'theory': {'model': 'folpsD', 'prior_basis': 'physical_aap', 'damping': 'lor', 'marg': True},
-                        'emulator': {},
+                        'theory': {},
+                        'emulator': {'name': 'taylor', 'order': 3},
                         'window': {}}
     propose_stat = {'mesh2_spectrum': {'select': [{'ells': ell, 'k': [0.02, 0.2, 0.005]} for ell in [0, 2]]},
                     'mesh3_spectrum': {'select': [{'ells': (0, 0, 0), 'k': [0.02, 0.12, 0.005]}, {'ells': (2, 0, 2), 'k': [0.02, 0.08, 0.005]}],
-                                        'basis': 'sugiyama-diagonal'}}
-    propose_theory = {'mesh2_spectrum': {'b3_coev': True, 'A_full': False},
-                      'mesh3_spectrum': {'A_full': False}}
+                                        'basis': 'sugiyama-diagonal'},
+                   'recon_particle2_correlation': {'select': [{'ells': ell, 's': [60., 150., 4.]} for ell in [0, 2]]}}
+    base_full_shape_theory = {'model': 'folpsD', 'prior_basis': 'physical_aap', 'damping': 'lor', 'marg': True}
+    base_bao_theory = {'model': 'bao', 'broadband': 'pcs2', 'marg': True}
+    propose_theory = {'mesh2_spectrum': base_full_shape_theory | {'b3_coev': True, 'A_full': False},
+                      'mesh3_spectrum': base_full_shape_theory | {'A_full': False},
+                      'recon_particle2_correlation': base_bao_theory}
     for _stat in propose_stat:
         if _stat in stat:
             propose_fiducial['stat'].update(propose_stat[_stat])
@@ -834,7 +947,10 @@ def fill_fiducial_options(options):
 
 def generate_likelihood_options_helper(stats=('mesh2_spectrum', 'mesh3_spectrum'),
                                        tracer='LRG', zrange=(0.4, 0.6), region='GCcomb',
-                                       version='abacus-2ndgen-complete', covariance='holi-v1-altmtl'):
+                                       version='abacus-2ndgen-complete',
+                                       covariance='holi-v1-altmtl',
+                                       stats_dir=Path('/dvs_ro/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe'),
+                                       emulator=True):
     """
     Convenience helper that builds a minimal dictionary of likelihood options.
 
@@ -866,15 +982,17 @@ def generate_likelihood_options_helper(stats=('mesh2_spectrum', 'mesh3_spectrum'
         stats = [stats]
     observables = []
     tracer, zrange = get_full_tracer_zrange(tracer)
-    # FIXME
-    mock_dir = Path('/dvs_ro/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
     for stat in stats:
-        catalog = {'version': version, 'tracer': tracer, 'zrange': zrange, 'region': region}
+        catalog = {'version': version, 'tracer': tracer, 'zrange': zrange, 'region': region, 'stats_dir': stats_dir}
         if 'data' not in version:
             catalog['imock'] = '*'  # read all available mocks
-            catalog.setdefault('stats_dir', mock_dir)
-        observables.append({'stat': {'kind': stat}, 'catalog': catalog})
-    covariance = {'version': covariance, 'stats_dir': mock_dir}
+        observable_options = {'stat': {'kind': stat}, 'catalog': catalog}
+        if emulator is False: emulator_options = {'name': ''}
+        elif emulator is True: emulator_options = {}
+        else: emulator_options = dict(emulator)
+        observable_options['emulator'] = emulator_options
+        observables.append(observable_options)
+    covariance = {'version': covariance, 'stats_dir': stats_dir}
     return fill_fiducial_likelihood_options({'observables': observables, 'covariance': covariance})
 
 
@@ -1003,9 +1121,9 @@ def _str_from_observable_options(options: dict, level: int=None) -> str:
 
     # Then, stat and select, e.g. S2-ell0-k-0.02-0.2-ell2-k-0.02-0.2
     translate_stat_name = {'S2': ['mesh2_spectrum'],
-                      'S3': ['mesh3_spectrum'],
-                      'BAOR': ['bao', 'recon'],
-                      'C2R': ['particle2_correlation', 'recon']}
+                           'S3': ['mesh3_spectrum'],
+                           'BAOR': ['bao', 'recon'],
+                           'C2R': ['particle2_correlation', 'recon']}
     stat_options = options['stat']
     stat = stat_options['kind']
     if level['stat'] >= 1:

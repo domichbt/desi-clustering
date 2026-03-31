@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import numpy as np
+
 from full_shape import tools
 from full_shape.tools import generate_likelihood_options_helper, str_from_likelihood_options, str_from_options, get_likelihood, fill_fiducial_options, setup_logging
 
@@ -30,7 +34,7 @@ def test_str():
     assert s == 'cosmo-base_ns-fixed_LRG3xELG1-S2+LRG3xELG1-S3', s
 
 
-def test_likelihood():
+def test_likelihood_full_shape():
     options = {}
     options['likelihoods'] = [generate_likelihood_options_helper(tracer=tracer) for tracer in ['LRG2', 'LRG3']]
     for template in ['direct', 'shapefit']:
@@ -43,6 +47,30 @@ def test_likelihood():
             assert 'h' in likelihood.varied_params
         elif template == 'shapefit':
             assert 'df' in likelihood.varied_params
+
+
+def test_likelihood_bao():
+    options = {}
+    stats_dir = Path('/dvs_ro/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
+    for template in ['bao', 'direct'][:1]:
+        options['likelihoods'] = [generate_likelihood_options_helper(stats=['recon_particle2_correlation'], tracer=tracer, version='data-dr2-v1.1', stats_dir=stats_dir, emulator=template == 'direct') for tracer in ['LRG2']]
+        for likelihood_options in options['likelihoods']:
+            likelihood_options['covariance'] = {'source': 'rascalc', 'version': 'data-dr2-v1.1', 'stats_dir': stats_dir}
+        options['cosmology'] = {'template': template}
+        options = fill_fiducial_options(options)
+        likelihood = get_likelihood(options['likelihoods'], cosmology_options=options['cosmology'], cache_dir='./_cache', cache_mode='w')
+        assert np.isfinite(likelihood())
+        if template == 'direct':
+            assert 'h' in likelihood.varied_params
+        elif template == 'bao':
+            assert 'qpar' in likelihood.varied_params
+            from desilike.profilers import MinuitProfiler
+            profiler = MinuitProfiler(likelihood, seed=42)
+            profiler.maximize()
+            likelihood(**profiler.profiles.bestfit.choice(input=True, index='argmax'))
+            print(profiler.profiles.to_stats(tablefmt='pretty'))
+            likelihood.likelihoods[0].observables[0].plot(fn='./_tests/plot.png')
+            likelihood.likelihoods[0].observables[0].plot_bao(fn='./_tests/plot_bao.png')
 
 
 def test_covariance():
@@ -69,7 +97,10 @@ def test_options():
 if __name__ == '__main__':
 
     setup_logging()
+    test_covariance()
+    exit()
     test_str()
-    test_likelihood()
+    test_likelihood_bao()
+    test_likelihood_full_shape()
     test_covariance()
     test_options()

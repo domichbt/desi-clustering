@@ -67,7 +67,7 @@ def run_stats(tracer='LRG', version='abacus-2ndgen-complete', onthefly=None, imo
             else:
                 get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
             options = fill_fiducial_options(options)
-            if True: #onthefly:
+            if onthefly:
                 for tracer in options['catalog']:
                     options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran']), 'from_data': ['Z', 'WEIGHT_SYS', 'FRAC_TLOBS_TILES']}
             compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
@@ -99,9 +99,9 @@ if __name__ == '__main__':
     imocks = np.arange(3)
 
     stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
-    #version = 'abacus-2ndgen-complete'
-    version = 'abacus-2ndgen-altmtl'
-    onthefly = 'reshuffle'
+    #version = 'abacus-2ndgen-dr2-complete'
+    version = 'abacus-2ndgen-dr2-altmtl'
+    #onthefly = 'reshuffle'
     #onthefly = 'complete'
     onthefly = None
 

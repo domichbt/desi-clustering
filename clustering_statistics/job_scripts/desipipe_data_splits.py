@@ -38,7 +38,7 @@ tmw = tm.clone(scheduler=dict(max_workers=1), provider=dict(provider='nersc', ti
                 mpiprocs_per_worker=2250, nodes_per_worker=25, output=output, error=error, stop_after=1, constraint='cpu'))
 
 
-def run_stats(version='data-dr2-v2', tracer='LRG', regions=['NGC','SGC'], weight_type = 'weight_FKP', stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], ibatch=None, **kwargs):
+def run_stats(version='data-dr2-v2', tracer='LRG', regions=['NGC', 'SGC'], weight='weight-FKP', stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], ibatch=None, **kwargs):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
     import os
@@ -58,17 +58,17 @@ def run_stats(version='data-dr2-v2', tracer='LRG', regions=['NGC','SGC'], weight
     zranges = tools.propose_fiducial('zranges', tracer)
     get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
     for region in regions:
-        options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight_type=weight_type), mesh2_spectrum={'cut': True}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
+        options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight), mesh2_spectrum={'cut': True}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
         options = fill_fiducial_options(options)
         compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
 
 
-def postprocess_stats(version='data-dr2-v2', tracer='LRG', regions= ['GCcomb'], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', postprocess=['combine_regions'], **kwargs):
+def postprocess_stats(version='data-dr2-v2', tracer='LRG', regions=['GCcomb'], weight='weight-FKP', stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', postprocess=['combine_regions'], **kwargs):
     from clustering_statistics import postprocess_stats_from_options
     zranges = tools.propose_fiducial('zranges', tracer)
     for region in regions:
         get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
-        options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight_type=weight_type), combine_regions={'stats': ['mesh2_spectrum', 'mesh3_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum', 'window_mesh3_spectrum']}, mesh2_spectrum={'cut': True}, window_mesh2_spectrum={'cut': True})
+        options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight), combine_regions={'stats': ['mesh2_spectrum', 'mesh3_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum', 'window_mesh3_spectrum']}, mesh2_spectrum={'cut': True}, window_mesh2_spectrum={'cut': True})
         postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **options)
 
 
@@ -106,6 +106,6 @@ if __name__ == '__main__':
             if any('window_mesh3' in stat for stat in stats):
                 _tm = tmw
             return run_stats if mode == 'interactive' else _tm.python_app(run_stats)
-        get_run_stats()(version=version, tracer=tracer, regions=regions, stats_dir=stats_dir, stats=stats)
+        get_run_stats()(version=version, tracer=tracer, regions=regions, stats_dir=stats_dir, stats=stats, weight=weight_type)
         if postprocess:
-            postprocess_stats(version=version, tracer=tracer, regions=postregions, stats_dir=stats_dir, postprocess=postprocess)
+            postprocess_stats(version=version, tracer=tracer, regions=postregions, stats_dir=stats_dir, weight=weight_type, postprocess=postprocess)

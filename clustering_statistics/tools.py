@@ -117,7 +117,7 @@ def get_simple_stats(stats):
         return 'spectrum3'
     elif stats == 'particle2_correlation':
         return 'correlation2'
-    elif stats == 'particle2_correlation_recon':
+    elif stats == 'recon_particle2_correlation':
         return 'correlation2recon'
     else:
         raise NotImplementedError(f'stats {stats} is unknown')
@@ -453,11 +453,11 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     """
     base = {"catalog": {}, "particle2_correlation": {}, "mesh2_spectrum": {}, "mesh3_spectrum": {}, "window_mesh2_spectrum_fm": {}}
     propose_fiducial = {
-        'BGS': {'nran': 3, 'recon': {'bias': 1.5, 'smoothing_radius': 15., 'zrange': (0.1, 0.4)}},
-        'LRG+ELG': {'nran': 13, 'recon': {'bias': 1.6, 'smoothing_radius': 15.}, 'zrange': (0.8, 1.1)},
-        'LRG': {'nran': 10, 'recon': {'bias': 2.0, 'smoothing_radius': 15., 'zrange': (0.4, 1.1)}},
-        'ELG': {'nran': 15, 'recon': {'bias': 1.2, 'smoothing_radius': 15., 'zrange': (0.8, 1.6)}},
-        'QSO': {'nran': 4, 'recon': {'bias': 2.1, 'smoothing_radius': 30., 'zrange': (0.8, 2.1)}}}
+        'BGS': {'nran': 3, 'recon': {'mode': 'recsym', 'bias': 1.5, 'smoothing_radius': 15., 'zrange': (0.1, 0.4)}},
+        'LRG+ELG': {'nran': 13, 'recon': {'mode': 'recsym', 'bias': 1.6, 'smoothing_radius': 15.}, 'zrange': (0.8, 1.1)},
+        'LRG': {'nran': 10, 'recon': {'mode': 'recsym', 'bias': 2.0, 'smoothing_radius': 15., 'zrange': (0.4, 1.1)}},
+        'ELG': {'nran': 15, 'recon': {'mode': 'recsym', 'bias': 1.2, 'smoothing_radius': 15., 'zrange': (0.8, 1.6)}},
+        'QSO': {'nran': 4, 'recon': {'mode': 'recsym', 'bias': 2.1, 'smoothing_radius': 30., 'zrange': (0.8, 2.1)}}}
 
     tracers = _make_tuple(tracer)
     simple_tracers = [get_simple_tracer(tracer) for tracer in tracers]
@@ -538,7 +538,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
         templates_dir = Path("/dvs_ro/cfs/cdirs/desi/survey/catalogs/Y3/LSS/loa-v1/LSScats/v2/hpmaps/")
         translate_template_tracer = {'BGS': 'BGS_BRIGHT', 'ELG_LOPnotqso': 'ELG_LOPnotqso', 'ELG': 'ELG', 'LRG': 'LRG', 'QSO': 'QSO'}
         for tt, template_tracer in translate_template_tracer.items():
-            if tracers[0] in tt:
+            if tt in tracers[0]:
                 break
             else:
                 template_tracer = None
@@ -804,6 +804,26 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
                 cat_dir = cat_dir / 'v1.5'
             ext = 'fits'
 
+        elif version == 'data-dr2-v1.1':
+            cat_dir = desi_dir / f'survey/catalogs/DA2/LSS/loa-v1/LSScats/v1.1'
+            ext = 'fits'
+            if kind == 'parent_randoms':
+                program = 'bright' if 'BGS' in tracer else 'dark'
+                return [cat_dir / f'{program}_{iran}_full_noveto.ran.{ext}' for iran in nrans]
+            if 'bitwise' in weight:
+                data_dir = cat_dir / 'PIP'
+            else:
+                data_dir = cat_dir / 'nonKP'
+            ext = 'fits'
+            if kind == 'data':
+                return data_dir / f'{tracer}_{region}_clustering.dat.{ext}'
+            if kind == 'randoms':
+                return [data_dir / f'{tracer}_{region}_{iran:d}_clustering.ran.{ext}' for iran in nrans]
+            if kind == 'full_data':
+                return cat_dir / f'{tracer}_full_HPmapcut.dat.{ext}'
+            if kind == 'full_randoms':
+                return [cat_dir / f'{tracer}_{iran:d}_full_HPmapcut.ran.{ext}' for iran in nrans]
+
         elif version == 'data-dr2-v2':
             cat_dir = desi_dir / f'survey/catalogs/DA2/LSS/loa-v1/LSScats/v2'
             if kind == 'parent_randoms':
@@ -1016,6 +1036,9 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', pro
     corr_type = 'smu'
     battrs = kwargs.get('battrs', None)
     if battrs is not None: corr_type = ''.join(list(battrs))
+    jackknife = kwargs.get('jackknife', {}).get('nsplits', None)
+    if jackknife:
+        corr_type = f'{corr_type}_jackknife{jackknife:d}'
     if 'particle2_correlation' in kind:
         full = f'particle2_correlation_{corr_type}'
         if full not in kind:
@@ -1265,7 +1288,6 @@ def expand_randoms(randoms, parent_randoms, data, from_randoms=('RA', 'DEC'), fr
         for column in from_data:
             randoms[column] = data[column][index]
         if 'FRAC_TLOBS_TILES' in special_columns:
-            # It would have been so much simpler if data had the column TILES!
             # Total random weights is FRAC_TLOBS_TILES * (WEIGHT_SYS * WEIGHT_COMP * WEIGHT_ZFAIL coming from z shuffling) * overall region-based normalization factor
             # Correct up to a given region-based normalization factor
             data_wtotp = data['WEIGHT_COMP'] * data['WEIGHT_SYS'] * data['WEIGHT_ZFAIL']
@@ -1458,11 +1480,11 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
 
             if zrange is not None:
                 catalog = catalog[(catalog['Z'] >= zrange[0]) & (catalog['Z'] < zrange[1])]
-                if np.any(catalog['NX']==0):
+                if np.any(catalog['NX'] == 0):
                     # remove entries with NX=0
                     if mpicomm.rank == 0:
-                        logger.info(f'Found and removed {(catalog['NX']==0).sum()} objects with NX=0 from {fn}')
-                    catalog = catalog[catalog['NX']!=0]
+                        logger.info(f'Found and removed {(catalog['NX'] == 0).sum()} objects with NX=0 from {fn}')
+                    catalog = catalog[catalog['NX'] != 0]
             if 'bitwise' in weight_type:
                 # ADM: I guess this is because we want to restrict to TILE-intersections where we have observed something?
                 catalog = catalog[(catalog['FRAC_TLOBS_TILES'] != 0)]
@@ -1526,7 +1548,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
         rdzw.append(catalog)
 
     if concatenate:
-        if len(rdzw) > 1: return rdzw[0]
+        if len(rdzw) == 1: return rdzw[0]
         return Catalog.concatenate(rdzw)
     else:
         return rdzw
@@ -1630,18 +1652,19 @@ def read_full_catalog(kind, wntile=None, concatenate=True,
         if bitwise_weights is not None: catalog['BITWEIGHT'] = bitwise_weights
         rdw.append(catalog)
     if concatenate:
-        if len(rdw) > 1: return rdw[0]
+        if len(rdw) == 1: return rdw[0]
         return Catalog.concatenate(rdw)
     else:
         return rdw
 
 
-def write_stats(filename, stats):
+@default_mpicomm
+def write_stats(filename, stats, mpicomm=None):
     """Write summary statistics to file from process 0 only."""
     import jax
     filename = Path(filename)
     tmp_filename = filename.with_name(filename.stem + '.tmp' + filename.suffix)
-    if MPI.COMM_WORLD.rank == 0 and jax.process_index() == 0:
+    if mpicomm.rank == 0:
         stats.write(tmp_filename)
         logger.info(f'Writing {filename}')
         os.replace(tmp_filename, filename)

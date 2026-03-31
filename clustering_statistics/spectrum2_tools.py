@@ -253,14 +253,13 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
         if optimal_weights is None:
             results = _compute_spectrum_ell(all_particles, ells=ells)
         else:
+            fields = tuple(range(len(all_particles)))
+            fields = fields + (fields[-1],) * (2 - len(fields))
+            all_particles = tuple(all_particles) + (all_particles[-1],) * (2 - len(all_particles))
             results = {}
             for ell in ells:
                 if jax.process_index() == 0:
                     logger.info(f'Applying optimal weights for ell = {ell:d}')
-
-                fields = tuple(range(len(all_particles)))
-                fields = fields + (fields[-1],) * (2 - len(fields))
-                all_particles = tuple(all_particles) + (all_particles[-1],) * (2 - len(all_particles))
 
                 def _get_optimal_weights(all_particles):
                     # all_particles is [data1, data2] or [randoms1, randoms2] or [shifted1, shifted2]
@@ -431,14 +430,13 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                     results[key] = results[key].clone(observable=observable)
         else:
             results = {}
+            fields = tuple(range(len(all_randoms)))
+            fields = fields + (fields[-1],) * (2 - len(fields))
+            all_randoms = tuple(all_randoms) + (all_randoms[-1],) * (2 - len(all_randoms))
             # Loop over multipoles
             for ell in ells:
                 if jax.process_index() == 0:
                     logger.info(f'Applying optimal weights for ell = {ell:d}')
-
-                fields = tuple(range(len(all_randoms)))
-                fields = fields + (fields[-1],) * (2 - len(fields))
-                all_randoms = tuple(all_randoms) + (all_randoms[-1],) * (2 - len(all_randoms))
 
                 def _get_optimal_weights(all_particles):
                     # all_particles is [data1, data2] or [randoms1, randoms2] or [shifted1, shifted2]
@@ -453,12 +451,12 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum: types.Mesh2Spectr
                         yield tuple(clone(particles, weights=weights) for particles, weights in zip(all_particles, all_weights))
 
                 result_ell = {}
-                for isum, all_randoms in enumerate(_get_optimal_weights(all_randoms)):
+                for isum, _all_randoms in enumerate(_get_optimal_weights(all_randoms)):
                     # Loop over weight combinations for the same multipole
                     fields = None
-                    seed = [(42, randoms.extra["IDS"]) for randoms in all_randoms]
-                    zeff, norm_zeff = compute_fkp_effective_redshift(*all_randoms, order=2, split=seed, fields=fields, return_fraction=True, **kw_zeff)
-                    _result = _compute_window_ell(all_randoms, ells=[ell], isum=isum, fields=fields)
+                    seed = [(42, randoms.extra["IDS"]) for randoms in _all_randoms]
+                    zeff, norm_zeff = compute_fkp_effective_redshift(*_all_randoms, order=2, split=seed, fields=fields, return_fraction=True, **kw_zeff)
+                    _result = _compute_window_ell(_all_randoms, ells=[ell], isum=isum, fields=fields)
                     for key in _result:  # raw, cut, auw
                         if 'correlation' not in key:
                             observable = _result[key].observable
@@ -921,6 +919,10 @@ def run_preliminary_fit_mesh2_spectrum(data: types.Mesh2SpectrumPoles, window: t
     window = window.at.theory.select(k=(0.001, 1.2 * next(iter(data)).coords('k').max()))
     covariance = covariance.at.observable.match(data)
     z = window.observable.get(ells=0).attrs['zeff']
+
+    import numpy as np
+    # FIXME
+    np.trapz = np.trapezoid
 
     from desilike.theories.galaxy_clustering import FixedPowerSpectrumTemplate, KaiserTracerPowerSpectrumMultipoles, REPTVelocileptorsTracerPowerSpectrumMultipoles
     from desilike.observables.galaxy_clustering import TracerPowerSpectrumMultipolesObservable

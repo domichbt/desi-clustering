@@ -107,26 +107,36 @@ def test_recon(stat='recon_particle2_correlation'):
     for tracer in ['LRG']:
         zrange = tools.propose_fiducial('zranges', tracer)[0]
         for region in ['NGC', 'SGC'][:1]:
-            catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zrange, region=region, imock=451, nran=2)
+            catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zrange, region=region, weight='default-FKP', imock=451, nran=2)
             catalog_options.update(expand={'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=catalog_options['nran'])})
             compute_stats_from_options(stat, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), mesh2_spectrum={}, particle2_correlation={})
-            fn = tools.get_stats_fn(stats_dir=stats_dir, catalog=catalog_options)
-            assert np.allclose(types.read(fn).attrs['zeff'], 0.5094069545592056)
+            fn = tools.get_stats_fn(stats_dir=stats_dir, kind='recon_particle2_correlation', catalog=catalog_options)
+            assert np.allclose(types.read(fn).attrs['zeff'], 0.5095347497074821)
 
 
 def test_correlation():
     stats_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
     stats = ['particle2_correlation']
 
-    for tracer in ['LRG']:
-        zrange = tools.propose_fiducial('zranges', tracer)[0]
-        for region in ['NGC', 'SGC']:
-            catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zrange, region=region, imock=451, nran=2)
-            catalog_options.update(expand={'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=catalog_options['nran'])})
-            #compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), particle2_correlation={})
+    for jackknife in [{}, {'nsplits': 60}]:
+        for tracer in ['LRG']:
+            zrange = tools.propose_fiducial('zranges', tracer)[0]
+            for region in ['NGC', 'SGC']:
+                catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zrange, region=region, weight='default-FKP', imock=451, nran=2)
+                catalog_options.update(expand={'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=catalog_options['nran'])})
+                #compute_stats_from_options(stats, catalog=catalog_options, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), particle2_correlation={'jackknife': jackknife})
 
-    options = dict(catalog=catalog_options, combine_regions={'stats': ['particle2_correlation']})
-    postprocess_stats_from_options(['combine_regions'], get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), **options)
+        options = dict(catalog=catalog_options, combine_regions={'stats': ['particle2_correlation']}, particle2_correlation={'jackknife': jackknife})
+        postprocess_stats_from_options(['combine_regions'], get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), **options)
+
+    fn = tools.get_stats_fn(stats_dir=stats_dir, kind='particle2_correlation', catalog=catalog_options)
+    fn_jack = tools.get_stats_fn(stats_dir=stats_dir, kind='particle2_correlation', catalog=catalog_options, jackknife={'nsplits': 60})
+    correlation = types.read(fn)
+    correlation_jack = types.read(fn_jack)
+    for name in ['DD', 'DS', 'SD', 'SS', 'RR']:
+        assert np.allclose(correlation_jack.get(name).value(), correlation.get(name).value(), rtol=1e-8)
+    for c in [correlation_jack, correlation]:
+        assert np.allclose(c.value(), (c.get('DD').value() - c.get('DS').value() - c.get('SD').value() + c.get('SS').value()) / c.get('SS').value())
 
 
 def test_complete_catalog():
@@ -363,8 +373,7 @@ if __name__ == '__main__':
 
     jax.distributed.initialize()
     #test_correlation()
-    test_covariance()
-    exit()
+    #test_covariance()
     #test_stats_fn()
     #test_complete_catalog()
     #test_expand_randoms_catalog()
@@ -381,8 +390,8 @@ if __name__ == '__main__':
     #test_bitwise(stats=['mesh2_spectrum'])
     #test_expand_randoms_stats()
     #test_optimal_weights()
-    #test_cross()
-    #test_window()
+    test_cross()
+    test_window()
     #test_spectrum3()
     #test_norm()
     #test_recon()
