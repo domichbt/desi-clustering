@@ -58,9 +58,9 @@ def run_stats(tracer='LRG', project='', version='holi-v1-altmtl', onthefly=None,
         zranges = tools.propose_fiducial('zranges', tracer, analysis=analysis)
     for imock in imocks:
         regions = ['NGC', 'SGC']
-        for region in regions: 
+        for region in regions:
             options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True}, window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
-            
+
             stats_dir_kws = dict(stats_dir=stats_dir, project=project)
             if onthefly == 'complete':
                 options['catalog']['complete'] = {}
@@ -70,16 +70,16 @@ def run_stats(tracer='LRG', project='', version='holi-v1-altmtl', onthefly=None,
                 get_stats_fn = functools.partial(tools.get_stats_fn, extra='reshuffle', **stats_dir_kws)
             else:
                 get_stats_fn = functools.partial(tools.get_stats_fn, **stats_dir_kws)
-           
+
             options = fill_fiducial_options(options)
             if True: #onthefly:
                 for tracer in options['catalog']:
                     options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran']), 'from_data': ['Z', 'WEIGHT_SYS', 'FRAC_TLOBS_TILES']}
             compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
-       
+
     # postprocess
     if postprocess:
-        postprocess_options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, imock=imocks[0]), imocks=imocks, combine_regions={'stats': stats}, mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True})    
+        postprocess_options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, imock=imocks[0]), imocks=imocks, combine_regions={'stats': stats}, mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True})
         postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **postprocess_options)
 
 
@@ -87,7 +87,7 @@ def postprocess_stats(tracer='LRG', analysis='full_shape', project='', version='
     from clustering_statistics import postprocess_stats_from_options
     if zranges is None:
         zranges = tools.propose_fiducial('zranges', tracer, analysis=analysis)
-    options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, imock=imocks[0]), imocks=imocks, combine_regions={'stats': stats}, mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True})    
+    options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, imock=imocks[0]), imocks=imocks, combine_regions={'stats': stats}, mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True})
     stats_dir_kws = dict(stats_dir=stats_dir, project=project)
     if onthefly == 'complete':
         get_stats_fn = functools.partial(tools.get_stats_fn, extra='complete', **stats_dir_kws)
@@ -95,7 +95,7 @@ def postprocess_stats(tracer='LRG', analysis='full_shape', project='', version='
         get_stats_fn = functools.partial(tools.get_stats_fn, extra='reshuffle', **stats_dir_kws)
     else:
         get_stats_fn = functools.partial(tools.get_stats_fn, **stats_dir_kws)
-                
+
     postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **options)
 
 
@@ -119,20 +119,23 @@ if __name__ == '__main__':
     # version = 'holi-v1-altmtl'
     # stats_dir  = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' 
     # to run job
-    mode = 'slurm'
+    # mode = 'slurm'
+    mode = 'interactive'
     stats, postprocess = [], []
     stats = ['mesh2_spectrum', 'mesh3_spectrum']
     postprocess = ['combine_regions']
-    imocks = np.arange(60)
+    imocks = np.arange(1000)
     stats_dir = tools.base_stats_dir
     analysis = 'full_shape'
     project = f'{analysis}/base'
     version = 'holi-v3-altmtl'
+    # weights = ['default-FKP','default-noimsys-FKP']
+    weight = 'default-FKP'
     onthefly = None
     zranges = None
 
-    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO'][:2]:
-        if True:
+    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO'][1:]:
+        if False:
             # Rerun stats for high-z
             if 'LRG' in tracer:
                 zranges = [(0.8,1.1)]
@@ -140,14 +143,15 @@ if __name__ == '__main__':
                 zranges = [(1.1,1.6)]
             else:
                 zranges = None
-                
-        if False:
+
+        if True:
             exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=list(range(1001)))[:2]
             imocks = exists[1]['imock']
             rerun = []
             for zrange in tools.propose_fiducial('zranges', tracer, analysis=analysis):
                 for kind in ['mesh2_spectrum', 'mesh3_spectrum']:
-                    rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, kind=kind, stats_dir=stats_dir, project=project, tracer=tracer, region='NGC', weight='default-FKP', zrange=zrange, version=version), test_if_readable=True, imock=list(range(1001)))
+                    stats_kws = dict(basis='sugiyama-diagonal', kind=kind, stats_dir=Path(str(stats_dir).replace('global','dvs_ro')), tracer=tracer, region='GCcomb', weight='default-FKP', zrange=zrange, version=version, project=project)
+                    rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, **stats_kws), test_if_readable=True, imock=list(range(1001)))
                     rerun += [imock for imock in imocks if (imock in unreadable[1]['imock']) or (imock not in rexists[1]['imock'])]
             imocks = sorted(set(rerun))
        
@@ -158,23 +162,24 @@ if __name__ == '__main__':
             if any('window_mesh3' in stat for stat in stats):
                 _tm = tmw
             return run_stats if mode == 'interactive' else _tm.python_app(run_stats)
-       
+
         run_stats_kws = dict(tracer=tracer, stats_dir=stats_dir, project=project, version=version, stats=stats, analysis=analysis, onthefly=onthefly, zranges=zranges, postprocess=postprocess)
-        if any('window' in stat for stat in stats):
-            _imocks = [201]
-            nbatches = 1
-            tasks = []
-            for ibatch in range(nbatches):
-                task = get_run_stats()(imocks=_imocks, ibatch=(ibatch, nbatches), **run_stats_kws)
-                tasks.append(task)
-            if nbatches >= 1:
-                # Add dependence on other tasks
-                get_run_stats()(imocks=_imocks, ibatch=nbatches, tasks=tasks, **run_stats_kws)
-        elif any('covariance' in stat for stat in stats):
-            get_run_stats()(imocks=[201], **run_stats_kws)
-        elif stats:
-            batch_imocks = np.array_split(imocks, max(len(imocks) // 10, 1)) if len(imocks) else []
-            for _imocks in batch_imocks:
-                get_run_stats()(imocks=_imocks, **run_stats_kws)
+        if False:
+            if any('window' in stat for stat in stats):
+                _imocks = [201]
+                nbatches = 1
+                tasks = []
+                for ibatch in range(nbatches):
+                    task = get_run_stats()(imocks=_imocks, ibatch=(ibatch, nbatches), **run_stats_kws)
+                    tasks.append(task)
+                if nbatches >= 1:
+                    # Add dependence on other tasks
+                    get_run_stats()(imocks=_imocks, ibatch=nbatches, tasks=tasks, **run_stats_kws)
+            elif any('covariance' in stat for stat in stats):
+                get_run_stats()(imocks=[201], **run_stats_kws)
+            elif stats:
+                batch_imocks = np.array_split(imocks, max(len(imocks) // 10, 1)) if len(imocks) else []
+                for _imocks in batch_imocks:
+                    get_run_stats()(imocks=_imocks, **run_stats_kws)
         # if postprocess:
-        #     postprocess_stats(imocks=imocks, postprocess=postprocess, **run_stats_kws)
+        #     postprocess_stats(imocks=imocks, **run_stats_kws)
