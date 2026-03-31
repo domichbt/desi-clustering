@@ -1,3 +1,16 @@
+"""
+Shared utilities for clusterin -statistics.
+
+Main functions
+--------------
+* `fill_fiducial_options`: Expand partial user options into full fiducial dictionaries.
+* `get_catalog_fn`: Construct input catalog filenames from analysis options.
+* `get_stats_fn`: Construct standardized output filenames for statistics.
+* `read_clustering_catalog`: Load and filter survey clustering catalogs.
+* `read_full_catalog`: Load full catalogs needed for specialized workflows.
+* `write_stats`: Serialize measured statistics to disk.
+"""
+
 import os
 import time
 import logging
@@ -872,7 +885,7 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             ext = 'h5' if 'full' in kind else 'h5'
             if kind == 'forfa_data':
                 return base_dir / f'forFA{imock:d}.fits'
- 
+
         elif version == 'glam-uchuu-v1-altmtl':
             base_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/GLAM-Uchuu_v1'
             cat_dir = base_dir / f'altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
@@ -912,7 +925,7 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             base_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/AbacusHF_DR2v2'
             cat_dir = base_dir / f'altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
             ext = 'h5'
-        
+
         elif 'uchuu-hf' in version:
             if 'altmtl' in version:
                 #base_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/altmtl/')
@@ -1039,7 +1052,7 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', pro
     auw = '_auw' if auw else ''
     cut = '_thetacut' if cut else ''
     extra = f'_{extra}' if extra else ''
-       
+
     corr_type = 'smu'
     battrs = kwargs.get('battrs', None)
     if battrs is not None: corr_type = ''.join(list(battrs))

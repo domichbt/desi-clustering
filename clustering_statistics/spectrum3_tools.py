@@ -1,3 +1,13 @@
+"""
+Fourier-space 3-point clustering measurements.
+
+Main functions
+--------------
+* `compute_mesh3_spectrum`: Main bispectrum measurement backend.
+* `compute_window_mesh3_spectrum`: Compute bispectrum window.
+* `compute_box_mesh3_spectrum`: Measure the bispectrum in periodic boxes.
+"""
+
 import time
 import logging
 
@@ -258,7 +268,7 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, zeff: dict=None, 
             window = window.clone(observable=observable, value=window.value() / (norm[..., None] / np.mean(norm)))  # just in case norm is k-dependent
             results['raw'] = window
     return results
-    
+
 
 def compute_box_mesh3_spectrum(*get_data, mattrs=None,
                                 basis='sugiyama-diagonal', ells=[(0, 0, 0), (2, 0, 2)], edges=None, los='z',

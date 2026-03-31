@@ -2,7 +2,6 @@
 
 Collection of scripts to produce the DESI DR2 clustering measurements from the data / mocks catalogs to the parameter inferences.
 
-
 ## 📦 Installation
 
 You can install the latest version directly from the GitHub repository:
@@ -18,10 +17,16 @@ git clone https://github.com/cosmodesi/desi-clustering.git
 cd desi-clustering
 pip install -e .
 ```
-In both cases, to compute (fiducial) clustering statistics you can run the command:
-```bash
-clustering-stats --help
-```
+
+## Overview
+
+The package follows a simple structure:
+
+* **`clustering_statistics`**: measurement of clustering statistics (power spectrum, correlation function, bispectrum, etc.),
+common to Full Shape, BAO and PNG Key Projects
+* **`full_shape`**: full-shape fits
+* **`bao`**: BAO fits
+* **`local_png`**: local primordial non-Gaussianity
 
 ## Environment
 

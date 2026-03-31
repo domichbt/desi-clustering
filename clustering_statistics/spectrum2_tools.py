@@ -1,3 +1,16 @@
+"""
+Fourier-space 2-point clustering measurements.
+
+Main functions
+--------------
+* `prepare_jaxpower_particles`: Convert catalogs into mesh-ready particle inputs.
+* `compute_mesh2_spectrum`: Main `P(k)` measurement backend.
+* `compute_window_mesh2_spectrum`: Compute the power spectrum window matrix.
+* `compute_window_mesh2_spectrum_fm`: Build forward-model window matrix.
+* `compute_covariance_mesh2_spectrum`: Estimate Fourier-space covariance.
+* `run_preliminary_fit_mesh2_spectrum`: Run preliminary fits used in covariance matrix.
+"""
+
 import logging
 from collections.abc import Callable
 
@@ -1193,7 +1206,7 @@ def compute_covariance_box_mesh2_spectrum(theory: types.Mesh2SpectrumPoles=None,
     with create_sharding_mesh(meshsize=mattrs.get('meshsize', None)):
         mattrs = MeshAttrs(**mattrs)
         covariance = compute_spectrum2_covariance(mattrs, theory_sn)  # Gaussian, diagonal covariance
-    
+
         # Update label names
         fields = covariance.observable.fields
         observable = types.ObservableTree(list(covariance.observable), observables=['spectrum2'] * len(fields), tracers=fields)
