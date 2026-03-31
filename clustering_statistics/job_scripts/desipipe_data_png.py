@@ -156,7 +156,8 @@ if __name__ == '__main__':
     # window_mesh2_spectrum_fm
     # check the propose fiducial ! 
 
-    stats = ['mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
+    #stats = ['mesh2_spectrum', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum']
+    stats = ['window_mesh2_spectrum_fm']
     postprocess = ['combine_regions']
 
     #postprocess = None
@@ -190,7 +191,7 @@ if __name__ == '__main__':
         #zranges += tools.propose_fiducial(kind='zranges', tracer=tracer)
         logger.info(f'zranges: {zranges}')
 
-        weights = ['default-fkp-oqe', 'default-fkp'][:1]
+        weights = ['default-fkp-oqe', 'default-fkp'][1:]
         get_run_stats()(cat_dir=cat_dir, stats_dir=stats_dir, tracer=tracer, zranges=zranges, weights=weights, regions=regions, stats=stats)
         
         if postprocess:
