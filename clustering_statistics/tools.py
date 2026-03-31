@@ -880,6 +880,13 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             if kind == 'forfa_data':
                 return base_dir / f'forFA{imock:d}.fits'
 
+        elif version == 'glam-uchuu-v2-altmtl':
+            base_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/GLAM-Uchuu_v2'
+            cat_dir = base_dir / f'altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
+            ext = 'h5'
+            if kind == 'forfa_data':
+                return base_dir / f'forFA{imock:d}.fits'
+
         elif version == 'abacus-2ndgen-dr2-complete':
             if 'BGS' in tracer:
                 cat_dir = desi_dir / f'survey/catalogs/Y3/mocks/SecondGenMocks/AbacusSummitBGS_v2/mock{imock:d}'
