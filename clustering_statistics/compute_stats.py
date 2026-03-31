@@ -1,3 +1,21 @@
+"""
+High-level orchestration for cutsky clustering measurements.
+
+This module provides the main CLI entry point (`clustering-stats`) and the
+pipeline driver used for DESI lightcone clustering statistics.
+
+Main functions
+--------------
+* `compute_stats_from_options`, which takes as input a list of summary statistics to compute and a dictionary of options,
+and orchestrates the workflow:
+- fill fiducial defaults
+- read clustering catalogs and randoms
+- optionally run reconstruction
+- dispatch to statistic-specific backends, such as `compute_mesh2_spectrum` for power spectrum measurement or `compute_particle2_correlation` for correlation function measurement.
+* `postprocess_stats_from_options`, which can be used to run postprocessing steps,
+such as combining measurements from different regions or computing rotation matrices for the power spectrum.
+"""
+
 import os
 import logging
 import functools
@@ -228,7 +246,7 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                             spectrum.attrs.update(stat_recon_attrs)
                         tools.write_stats(fn, spectrum[key])
 
-        jax.experimental.multihost_utils.sync_global_devices('spectrum')  # wait for the writer 
+        jax.experimental.multihost_utils.sync_global_devices('spectrum')  # wait for the writer
 
         # Window matrix
         funcs = {

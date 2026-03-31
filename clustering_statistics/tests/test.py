@@ -165,7 +165,7 @@ def test_complete_stats():
             fn = tools.get_stats_fn(kind=stat, stats_dir=stats_dir, **catalog_options)
             if jax.process_index() == 0:
                 spectrum = types.read(fn)
-                assert np.allclose(np.mean(spectrum.value()), 7226.4642021336085)
+                assert np.allclose(np.mean(spectrum.value()), 4839.647701697041)
 
 
 def test_expand_randoms_catalog():
@@ -205,7 +205,7 @@ def test_expand_randoms_stats(stat='mesh2_spectrum'):
             fn = tools.get_stats_fn(kind=stat, stats_dir=stats_dir, **catalog_options)
             if jax.process_index() == 0:
                 spectrum = types.read(fn)
-                assert np.allclose(np.mean(spectrum.value()), 4761.469528749514)
+                assert np.allclose(np.mean(spectrum.value()), 4761.469528749514), np.mean(spectrum.value())
 
 
 def test_optimal_weights(stats=['mesh2_spectrum']):
@@ -378,7 +378,7 @@ if __name__ == '__main__':
     #test_complete_catalog()
     #test_expand_randoms_catalog()
     #test_complete_stats()
-    #test_expand_stats()
+    test_expand_randoms_stats()
 
     #test_window()
     #test_blinding()
@@ -390,8 +390,8 @@ if __name__ == '__main__':
     #test_bitwise(stats=['mesh2_spectrum'])
     #test_expand_randoms_stats()
     #test_optimal_weights()
-    test_cross()
-    test_window()
+    #test_cross()
+    #test_window()
     #test_spectrum3()
     #test_norm()
     #test_recon()

@@ -19,7 +19,7 @@ from clustering_statistics import tools
 setup_logging()
 
 
-def run_stats(tracer='LRG', version='glam-uchuu-v1-altmtl', weight='default-FKP', imocks=[451], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], complete=False):
+def run_stats(tracer='LRG', version='glam-uchuu-v1-altmtl', weight='default-FKP', imocks=[451], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], onthefly=None):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
     import os
@@ -35,22 +35,32 @@ def run_stats(tracer='LRG', version='glam-uchuu-v1-altmtl', weight='default-FKP'
     else: print('Initializing distributed environment')
     from clustering_statistics import tools, setup_logging, compute_stats_from_options, combine_stats_from_options, fill_fiducial_options
 
+    if 'complete' in version:
+        cat_dir = Path(os.getenv('SCRATCH')) / 'clustering_catalogs' / f'glam-uchuu-v1-altmtl_complete'
+
+        def get_catalog_fn(imock=0, **kwargs):
+            return tools.get_catalog_fn(cat_dir=cat_dir / f'complete{imock:d}', imock=imock, **kwargs)
+
+    else:
+        get_catalog_fn = tools.get_catalog_fn
+
     setup_logging()
     cache = {}
     zranges = tools.propose_fiducial('zranges', tracer)
     for imock in imocks:
-        regions = ['NGC', 'SGC']
+        regions = ['NGC', 'SGC'][:1]
         for region in regions:
             options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight, imock=imock), mesh2_spectrum={'cut': True, 'auw': True if 'altmtl' in version else None})
-            options = fill_fiducial_options(options)
-            if complete:
+            if onthefly == 'complete':
                 options['catalog']['complete'] = {}
-                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete-noshuffle')
+                get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='complete')
             else:
                 get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
-            for tracer in options['catalog']:
-                options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran'])}
-            compute_stats_from_options(stats, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), cache=cache, **options)
+            options = fill_fiducial_options(options)
+            if 'complete' not in version:
+                for tracer in options['catalog']:
+                    options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran'])}
+            compute_stats_from_options(stats, get_stats_fn=get_stats_fn, get_catalog_fn=get_catalog_fn, cache=cache, **options)
     #jax.distributed.shutdown()
 
 
@@ -82,16 +92,17 @@ def plot_density(imock=[0], tracer='LRG', zranges=None, version='glam-uchuu-v1-a
 
 if __name__ == '__main__':
 
-    imocks = 100 + np.arange(50)
     stats_dir = Path(os.getenv('SCRATCH')) / 'glam-uchuu_mocks_validation'
+    imocks = 100 + np.arange(50)[:3]
 
-    imocks = [100]
     todo = ['stats']
-    stats = ['mesh2_spectrum', 'mesh3_spectrum_sugiyama', 'mesh3_spectrum_scoccimarro', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum'][-2:]
-    stats = []
-    postprocess = ['combine_regions']
+    stats = ['mesh2_spectrum', 'mesh3_spectrum_sugiyama', 'mesh3_spectrum_scoccimarro', 'window_mesh2_spectrum', 'covariance_mesh2_spectrum'][:1]
+    postprocess = ['combine_regions'][:0]
     weight = 'default-FKP'
     version = 'glam-uchuu-v1-altmtl'
+    #version = 'glam-uchuu-v1-complete'
+    onthefly = 'complete'
+    #onthefly = None
 
     if 'stats' in todo:
         tracers = ['LRG', 'ELG_LOPnotqso', 'QSO']
@@ -99,7 +110,7 @@ if __name__ == '__main__':
             if any('window' in stat or 'covariance' in stat for stat in stats):
                 imocks = [100]
             if stats:
-                run_stats(tracer, version=version, weight=weight, stats=stats, stats_dir=stats_dir, imocks=imocks)
+                run_stats(tracer, version=version, weight=weight, stats=stats, onthefly=onthefly, stats_dir=stats_dir, imocks=imocks)
             if postprocess:
                 postprocess_stats(tracer, version=version, weight=weight, imocks=imocks, stats_dir=stats_dir, postprocess=postprocess)
 

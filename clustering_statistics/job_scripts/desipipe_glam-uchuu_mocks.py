@@ -102,12 +102,12 @@ if __name__ == '__main__':
     
     mode = 'interactive'
     if 'glam' in version:
-        imocks2run = np.arange(100,105+1)
+        imocks2run = np.arange(100, 105+1)
     else:
-        imocks2run = np.arange(201,205+1)
+        imocks2run = np.arange(201, 205+1)
     analysis = 'png_local'
     tracers = ['LRG']
-    noric_list = [True,False]
+    noric_list = [True, False]
     cai_dir    = Path(f'/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe/')
     stats_dir  = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' / version / analysis
     merged_dir = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' / version / 'merged'

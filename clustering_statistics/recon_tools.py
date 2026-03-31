@@ -1,3 +1,12 @@
+"""
+Density-field reconstruction utilities.
+
+Main functions
+--------------
+* `compute_reconstruction`: Run reconstruction for cutsky geometry.
+* `compute_box_reconstruction`: Run reconstruction for periodix boxes.
+"""
+
 import logging
 
 import jax
