@@ -111,6 +111,7 @@ if __name__ == '__main__':
 
     stats, postprocess = [], []
     version  = 'glam-uchuu-v2-altmtl'
+    check_for_existing_measurements = True
     
     # run on interactive node
     # mode = 'interactive'
@@ -134,7 +135,7 @@ if __name__ == '__main__':
     # run data_splits for lensing group with full_shape setup 
     stats   = ['mesh2_spectrum']
     analysis = 'full_shape'
-    project = f'{analysis}/data_split'
+    project = f'{analysis}/data_splits'
     weight  = 'default-FKP'
     regions = ['N','NGCnoN','S','SGCnoDES','SnoDES','DES','ACT_DR6','PLANCK_PR4'] # ,'GAL040','GAL060']
     # regions = ['GAL040','GAL060']
@@ -153,7 +154,7 @@ if __name__ == '__main__':
     zranges  = None
     
     for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO']:
-        if True:
+        if check_for_existing_measurements:
             exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=imocks2run)[:2]
             imocks = exists[1]['imock']
             rerun = []
@@ -164,6 +165,8 @@ if __name__ == '__main__':
                     rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, **stats_kws), test_if_readable=True, imock=imocks2run)
                     rerun += [imock for imock in imocks if (imock in unreadable[1]['imock']) or (imock not in rexists[1]['imock'])]
             imocks = sorted(set(rerun))
+        else:
+            imocks = imocks2run
        
         def get_run_stats():
             _tm = tm80

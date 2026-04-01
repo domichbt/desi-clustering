@@ -1,14 +1,10 @@
 """
-Script to create and spawn desipipe tasks to compute clustering measurements on HOLI mocks.
-To create and spawn the tasks on NERSC, use the following commands:
+Script to run a large batch of clustering measurements on an interactive GPU node.
+To run on NERSC, use the following commands:
 ```bash
 salloc -N 1 -C "gpu&hbm80g" -t 04:00:00 --gpus 4 --qos interactive --account desi_g
 source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
-export PYTHONPATH=$HOME/cai-dr2-clustering-products/:$PYTHONPATH
-python desipipe_holi_mocks.py         # create the list of tasks
-desipipe tasks -q holi_mocks          # check the list of tasks
-desipipe spawn -q holi_mocks --spawn  # spawn the jobs
-desipipe queues -q holi_mocks         # check the queue
+srun -n 4 python interactive_job.py
 ```
 """
 import os
@@ -16,25 +12,11 @@ from pathlib import Path
 import functools
 
 import numpy as np
-from desipipe import Queue, Environment, TaskManager, spawn, setup_logging
+from desipipe import setup_logging
 
 from clustering_statistics import tools
 
 setup_logging()
-
-queue = Queue('holi_mocks')
-queue.clear(kill=False)
-
-output, error = 'slurm_outputs/holi_mocks/slurm-%j.out', 'slurm_outputs/holi_mocks/slurm-%j.err'
-kwargs = {}
-environ = Environment('nersc-cosmodesi')
-tm = TaskManager(queue=queue, environ=environ)
-tm = tm.clone(scheduler=dict(max_workers=10), provider=dict(provider='nersc', time='02:00:00',
-                            mpiprocs_per_worker=4, output=output, error=error, stop_after=1, constraint='gpu'))
-tm80 = tm.clone(provider=dict(provider='nersc', time='02:00:00',
-                            mpiprocs_per_worker=4, output=output, error=error, stop_after=1, constraint='gpu&hbm80g'))
-tmw = tm.clone(scheduler=dict(max_workers=1), provider=dict(provider='nersc', time='00:10:00',
-                mpiprocs_per_worker=2250, nodes_per_worker=25, output=output, error=error, stop_after=1, constraint='cpu'))
 
 def run_stats(tracer='LRG', project='', version='holi-v3-altmtl', onthefly=None, imocks=[150], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], weight='default-FKP', analysis='full_shape', regions=['NGC','SGC'], ibatch=None, postprocess=None, zranges=None, **kwargs):
     # Everything inside this function will be executed on the compute nodes;
@@ -109,17 +91,15 @@ def postprocess_stats(tracer='LRG', analysis='full_shape', project='', version='
 if __name__ == '__main__':
 
     stats, postprocess = [], []
-    version  = 'holi-v3-altmtl'
+    version  = 'glam-uchuu-v2-altmtl'
     check_for_existing_measurements = True
     
-    # run on interactive node
-    # mode = 'interactive'
-    # imocks2run = np.arange(1000)
+    # test run 
+    # imocks2run = 150 + np.arange(1)
     # stats_dir  = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' 
     
-    # to run job
-    mode = 'slurm'
-    imocks2run = np.arange(1000)
+    # official run
+    imocks2run = 150 + np.arange(50)
     stats_dir  = tools.base_stats_dir
 
     # run fiducial full_shape
@@ -166,31 +146,9 @@ if __name__ == '__main__':
         else:
             imocks = imocks2run
        
-        def get_run_stats():
-            _tm = tm80
-            if tracer in ['LRG']:
-                _tm = tm
-            if any('window_mesh3' in stat for stat in stats):
-                _tm = tmw
-            return run_stats if mode == 'interactive' else _tm.python_app(run_stats)
-
         run_stats_kws = dict(tracer=tracer, stats_dir=stats_dir, project=project, version=version, stats=stats, analysis=analysis, onthefly=onthefly, zranges=zranges, regions=regions, weight=weight, postprocess=postprocess)
-        if True:
-            if any('window' in stat for stat in stats):
-                _imocks = [201]
-                nbatches = 1
-                tasks = []
-                for ibatch in range(nbatches):
-                    task = get_run_stats()(imocks=_imocks, ibatch=(ibatch, nbatches), **run_stats_kws)
-                    tasks.append(task)
-                if nbatches >= 1:
-                    # Add dependence on other tasks
-                    get_run_stats()(imocks=_imocks, ibatch=nbatches, tasks=tasks, **run_stats_kws)
-            elif any('covariance' in stat for stat in stats):
-                get_run_stats()(imocks=[201], **run_stats_kws)
-            elif stats:
-                batch_imocks = np.array_split(imocks, max(len(imocks) // max_mocks_per_batch, 1)) if len(imocks) else []
-                for _imocks in batch_imocks:
-                    get_run_stats()(imocks=_imocks, **run_stats_kws)
+        batch_imocks = np.array_split(imocks, max(len(imocks) // max_mocks_per_batch, 1)) if len(imocks) else []
+        for _imocks in batch_imocks:
+            run_stats(imocks=_imocks, **run_stats_kws)
         # if postprocess:
         #     postprocess_stats(imocks=imocks, **run_stats_kws)
