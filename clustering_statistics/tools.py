@@ -56,6 +56,7 @@ def default_mpicomm(func: Callable):
     return wrapper
 
 
+@functools.cache  # avoid reloading the footprint many times
 def load_footprint():
     #global footprint
     from regressis import footprint
@@ -154,21 +155,34 @@ def get_lensing_options(sample):
     raise ValueError('unknown lensing sample {}'.format(sample))
 
 
-def get_lensing_footprint(sample, threshold=0.1):
+@functools.cache
+def load_lensing_footprint(sample, threshold=0.1):
     # https://github.com/cosmodesi/DESI_Y3_x_CMB/blob/28bf7661a6ed02f81397d5db93d87344cd47d0d2/DESI_Y3_x_CMB/auxiliary/config_utils.py#L59
     import healpy as hp
     lensing_options = get_lensing_options(sample)
-    mask_path = lensing_options['file']
-    lensing_mask = hp.ud_grade(hp.read_map(mask_path, dtype=np.float32), lensing_options['healpix_nside']) # This is slow
+    mask_fn = lensing_options['file']
+    lensing_mask = hp.ud_grade(hp.read_map(mask_fn, dtype=np.float32), lensing_options['healpix_nside']) # This is slow
     if lensing_options['is_cmb_mask']:
         lensing_mask *= lensing_mask
 
     uses_galactic_coords = lensing_options["galactic_coordinates"]
     if uses_galactic_coords:
-        rotator = hp.Rotator(coord=['G','C'])
+        rotator = hp.Rotator(coord=['G', 'C'])
         lensing_mask = rotator.rotate_map_pixel(lensing_mask)
-    lensing_mask = hp.reorder(lensing_mask,r2n=True)
+    lensing_mask = hp.reorder(lensing_mask, r2n=True)
     return lensing_mask > threshold
+
+
+@functools.cache
+def load_galactic_mask(galactic_fraction_percent='GAL040'):
+    # Path to Planck Galactic plane mask
+    mask_fn = base_stats_dir / 'auxiliary_data' / 'HFI_Mask_GalPlane-apo0_2048_R2.00.fits'
+    galactic_mask = _read_catalog(mask_fn, mpicomm=MPI.COMM_SELF)
+
+    # Read mask and determine ordering from FITS header
+    is_nested = (galactic_mask.header['ORDERING'] == 'NESTED')
+    mask = galactic_mask[galactic_fraction_percent]
+    return mask, is_nested
 
 
 def get_galactic_mask(ra, dec, galactic_fraction_percent='GAL040'):
@@ -176,13 +190,7 @@ def get_galactic_mask(ra, dec, galactic_fraction_percent='GAL040'):
     import healpy as hp
     from astropy.coordinates import SkyCoord
     import astropy.units as u
-    # Path to Planck Galactic plane mask
-    mask_path = base_stats_dir / 'auxiliary_data' / 'HFI_Mask_GalPlane-apo0_2048_R2.00.fits'
-    galactic_mask = Catalog.read(mask_path)
-
-    # Read mask and determine ordering from FITS header
-    is_nested = (galactic_mask.header['ORDERING'] == 'NESTED')
-    mask = galactic_mask[galactic_fraction_percent]
+    mask, is_nested = load_galactic_mask(galactic_fraction_percent=galactic_fraction_percent)
 
     # Convert input positions from ecliptic to galactic coordinates
     # Assumes data['RA'] and data['DEC'] are ecliptic longitude/latitude in degrees
@@ -190,7 +198,7 @@ def get_galactic_mask(ra, dec, galactic_fraction_percent='GAL040'):
     l = coords.galactic.l.to(u.deg).value
     b = coords.galactic.b.to(u.deg).value
 
-    # Map galactic (l,b) to HEALPix pixel
+    # Map galactic (l, b) to HEALPix pixel
     nside = hp.get_nside(mask)
     th = (90.0 - b) * np.pi / 180.0
     phi = l * np.pi / 180.0
@@ -275,11 +283,11 @@ def select_region(ra, dec, region=None):
 
     # Other footprints
     if region == 'ACT_DR6':
-        act = get_lensing_footprint(region.lower())
+        act = load_lensing_footprint(region.lower())
         mask_act = act[hp.ang2pix(hp.get_nside(act), ra, dec, nest=True, lonlat=True)]
         return mask_act
     if region == 'PLANCK_PR4':
-        planck = get_lensing_footprint(region.lower())
+        planck = load_lensing_footprint(region.lower())
         mask_planck = planck[hp.ang2pix(hp.get_nside(planck), ra, dec, nest=True, lonlat=True)]
         return mask_planck
     if 'GAL' in region:
@@ -309,37 +317,6 @@ def compute_fiducial_selection_weights(catalog, stat='mesh3_spectrum', tracer=No
     return catalog
 
 
-@jax.jit
-def lininterp_1d(xp: jax.Array, y: jax.Array, xmin: jax.Array=0., step: jax.Array=1.):
-    """
-    xp are query points, y is a 1D array of samples spaced by `step` starting at `xmin`.
-
-    Parameters
-    ----------
-    xp : array-like
-        Query points.
-    y : array-like
-        Sampled values on a regular grid.
-    xmin : float, optional
-        Grid starting coordinate.
-    step : float, optional
-        Grid spacing.
-
-    Returns
-    -------
-    array-like
-        Interpolated values at xp using linear interpolation with clipping at boundaries.
-    """
-    fidx = (xp - xmin) / step
-    idx = jnp.floor(fidx).astype(jnp.int16)
-    fidx -= idx
-    toret = (1 - fidx) * y[idx] + fidx * y[idx + 1]
-    #return jnp.where((idx >= 0) & (idx < len(y)), toret, 0.)
-    toret = jnp.where(idx < 0, y[0], toret)
-    toret = jnp.where(idx > len(y) - 1, y[-1], toret)
-    return toret
-
-
 def get_interpolator_1d(x: jax.Array, y: jax.Array, order: int=1):
     """
     Return a 1D interpolator function for arrays x, y.
@@ -363,17 +340,11 @@ def get_interpolator_1d(x: jax.Array, y: jax.Array, order: int=1):
     """
     xmin, xmax = x[0], x[-1]
     step = (xmax - xmin) / (len(x) - 1)
-    is_lin = np.allclose(x, step * np.arange(len(x)) + xmin)
 
     if order == 1:
-        if is_lin:
 
-            def interp(xp):
-                return lininterp_1d(xp, y=y, xmin=xmin, step=step)
-        else:
-
-            def interp(xp):
-                return jnp.interp(xp, x, y)
+        def interp(xp):
+            return jnp.interp(xp, x, y)
 
     else:
         from interpax import Interpolator1D
@@ -1523,7 +1494,6 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
     for i, (irank, catalog) in enumerate(catalogs):
         if mpicomm.size > 1:
             catalog = Catalog.scatter(catalog, mpicomm=mpicomm, mpiroot=irank)
-
         if 'default' in weight_type:
             individual_weight = catalog['WEIGHT'].copy()
         else:
@@ -2057,7 +2027,7 @@ def reshuffle_randoms(randoms, merged_data, data, tracer, seed=42):
     #merged_data_wcomp_ntile = merged_data_wtotp / merged_data['WEIGHT']
 
     data_wcomp_ntile, data_ftile_ntile = {}, {}
-    merged_data_nz = -data.ones()
+    merged_data_nz = -merged_data.ones()
     # It looks like this operation was done for NGC, SGC separately
     for region in ['NGC', 'SGC']:
         mask_data = select_region(data['RA'], data['DEC'], region=region)
