@@ -60,7 +60,7 @@ if __name__ == '__main__':
     else:
         complete_version = version
     # output_cat_dir = Path(os.getenv('SCRATCH')) / 'clustering_catalogs' / f'{version}_complete'
-    output_cat_dir = tools.base_stats_dir / 'auxiliary_data' / f'{complete_version}-complete'
+    output_cat_dir = tools.base_stats_dir / 'auxiliary_data' / f'{complete_version}complete'
 
     for tracer in tracers:
         for imock in imocks:
