@@ -119,8 +119,7 @@ if __name__ == '__main__':
     # stats_dir  = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' 
     
     # to run job
-    #mode = 'slurm'
-    mode = 'interactive'
+    mode = 'slurm'
     imocks2run = 150 + np.arange(50)
     stats_dir  = tools.base_stats_dir
 
@@ -138,8 +137,8 @@ if __name__ == '__main__':
     analysis = 'full_shape'
     project = f'{analysis}/data_splits'
     weight  = 'default-FKP'
-    #regions = ['N', 'NGCnoN', 'S', 'SGCnoDES', 'SnoDES', 'DES', 'ACT_DR6', 'PLANCK_PR4'] # , 'GAL040', 'GAL060']
-    regions = ['GAL040', 'GAL060']
+    regions = ['N', 'NGCnoN', 'S', 'SGCnoDES', 'SnoDES', 'DES', 'ACT_DR6', 'PLANCK_PR4'] #, 'GAL040', 'GAL060']
+    # regions = ['GAL040', 'GAL060']
     max_mocks_per_batch = 5 
 
     # run fiducial local_png
