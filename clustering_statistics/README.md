@@ -70,6 +70,7 @@ Useful examples include:
 
 These scripts provide **real production configurations** and are often the best starting point for new analyses.
 
+
 ---
 
 ## Quick “where do I look?” map
@@ -83,6 +84,9 @@ These scripts provide **real production configurations** and are often the best 
 * **Measure `B(k)`** → `spectrum3_tools.py:compute_mesh3_spectrum(...)`
 * **Run reconstruction** → `recon_tools.py:compute_reconstruction(...)`
 * **Run box measurements** → `compute_box_stats.py`
+* **Read clustering catalogs** → `../nb/read_clustering_catalog.ipnyb`
+* **Read clustering measurements** → `nb/example_read_stats.ipnyb`
+* **Latest clustering measurements** → `nb/check_latest_measurements.ipnyb`
 
 
 ## Data Access
