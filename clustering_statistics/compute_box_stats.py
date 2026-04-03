@@ -1,3 +1,16 @@
+"""High-level orchestration for box clustering measurements.
+
+Main functions
+--------------
+* `compute_box_stats_from_options`, which takes as input a list of summary statistics to compute and a dictionary of options,
+and orchestrates the workflow:
+- fill fiducial defaults
+- read clustering catalogs
+- optionally run reconstruction
+- dispatch to statistic-specific backends, such as `compute_box_mesh2_spectrum` for power spectrum measurement or `compute_box_particle2_correlation` for correlation function measurement.
+
+"""
+
 import os
 import logging
 import functools

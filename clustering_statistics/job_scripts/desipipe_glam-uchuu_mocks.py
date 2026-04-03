@@ -2,8 +2,9 @@
 Script to create and spawn desipipe tasks to compute clustering measurements on glam-uchuu mocks.
 To create and spawn the tasks on NERSC, use the following commands:
 ```bash
+salloc -N 1 -C "gpu&hbm80g" -t 04:00:00 --gpus 4 --qos interactive --account desi_g
 export MPICH_MPIIO_DVS_STRIPE_WIDTH=1
-source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
+source /global/common/software/desi/users/adematti/cosmodesi_environment.sh new
 export PYTHONPATH=$HOME/cai-dr2-clustering-products/:$PYTHONPATH
 python desipipe_glam-uchuu_mocks.py         # create the list of tasks
 desipipe tasks  -q glam-uchuu_mocks         # check the list of tasks
@@ -12,16 +13,12 @@ desipipe queues -q glam-uchuu_mocks         # check the queue
 ```
 """
 import os
-import sys
 from pathlib import Path
 import functools
 
 import numpy as np
 from desipipe import Queue, Environment, TaskManager, spawn, setup_logging
 
-# code_dir = f'{os.getenv('HOME')}/cai-dr2-clustering-products/clustering_statistics/'
-# sys.path.insert(0,code_dir)
-# import tools
 from clustering_statistics import tools
 
 setup_logging()
@@ -37,9 +34,10 @@ tm = tm.clone(scheduler=dict(max_workers=10), provider=dict(provider='nersc', ti
                             mpiprocs_per_worker=4, output=output, error=error, stop_after=1, constraint='gpu'))
 tm80 = tm.clone(provider=dict(provider='nersc', time='02:00:00',
                             mpiprocs_per_worker=4, output=output, error=error, stop_after=1, constraint='gpu&hbm80g'))
+tmw = tm.clone(scheduler=dict(max_workers=1), provider=dict(provider='nersc', time='00:10:00',
+                mpiprocs_per_worker=2250, nodes_per_worker=25, output=output, error=error, stop_after=1, constraint='cpu'))
 
-
-def run_stats(tracer='LRG', version='glam-uchuu-v1-altmtl', imocks=[100], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], analysis='png_local',weight='default-oqe', merged_dir=Path(os.getenv('SCRATCH')) / 'merged', noric=False):
+def run_stats(tracer='LRG', project='', version='glam-uchuu-v2-altmtl', onthefly=None, imocks=[150], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], weight='default-FKP', analysis='full_shape', regions=['NGC','SGC'], ibatch=None, postprocess=None, zranges=None, **kwargs):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
     import os
@@ -53,105 +51,148 @@ def run_stats(tracer='LRG', version='glam-uchuu-v1-altmtl', imocks=[100], stats_
     try: jax.distributed.initialize()
     except RuntimeError: print('Distributed environment already initialized')
     else: print('Initializing distributed environment')
-    from clustering_statistics import tools, setup_logging, compute_stats_from_options, combine_stats_from_options, fill_fiducial_options
-
-    # code_dir = f'{os.getenv('HOME')}/cai-dr2-clustering-products/clustering_statistics/'
-    # sys.path.insert(0,code_dir)
-    # import tools
-    # from tools import setup_logging
-    # from compute_stats import  compute_stats_from_options, combine_stats_from_options, fill_fiducial_options
-    
+    from clustering_statistics import tools, setup_logging, compute_stats_from_options, fill_fiducial_options, postprocess_stats_from_options
     setup_logging()
+
     cache = {}
-    regions = ['NGC', 'SGC']
-    zranges = tools.propose_fiducial('zranges', tracer, analysis=analysis)
+    if zranges is None:
+        zranges = tools.propose_fiducial('zranges', tracer, analysis=analysis)
     for imock in imocks:
         for region in regions:
-            if analysis == 'full_shape' and not noric:
-                mesh2_spectrum = {'cut': True, 'auw': True}
-            elif analysis == 'png_local':
-                mesh2_spectrum = dict(optimal_weights=functools.partial(tools.compute_fiducial_png_weights, tracer=tracer) if 'oqe' in weight else None)
-            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock, weight=weight),
-                           mesh2_spectrum=mesh2_spectrum)
-            options = fill_fiducial_options(options, analysis=analysis)
-            for tracer in options['catalog']:
-                if 'glam' in version:
-                    options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran'])}
-                if noric:
-                    options['catalog'][tracer]['reshuffle'] = {'merged_data_fn': tools.get_catalog_fn(kind='data', cat_dir=merged_dir, version=version, tracer=tracer, region='ALL', imock=imock)}
-            compute_stats_from_options(stats, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='noric' if noric else ''), cache=cache, **options)
-        jax.experimental.multihost_utils.sync_global_devices('measurements')
-        for region_comb, regions in tools.possible_combine_regions(regions).items():
-            combine_stats_from_options(stats, region_comb, regions, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir, extra='noric' if noric else ''), **options)
-    #jax.distributed.shutdown()
+            mesh2_spectrum = {'cut': True, 
+                              'auw': True if 'altmtl' in version and onthefly is None else None,
+                              'optimal_weights': functools.partial(tools.compute_fiducial_png_weights, tracer=tracer) if 'oqe' in weight else None}
+            window_mesh2_spectrum = {'cut': True, 
+                                     'optimal_weights': functools.partial(tools.compute_fiducial_png_weights, tracer=tracer) if 'oqe' in weight else None}
+            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, weight=weight, imock=imock), 
+                           mesh2_spectrum=mesh2_spectrum, window_mesh2_spectrum=window_mesh2_spectrum, 
+                           window_mesh3_spectrum={'ibatch': ibatch} if isinstance(ibatch, tuple) else {'computed_batches': ibatch})
+
+            stats_dir_kws = dict(stats_dir=stats_dir, project=project)
+            if onthefly == 'complete':
+                options['catalog']['complete'] = {}
+                get_stats_fn = functools.partial(tools.get_stats_fn, extra='complete', **stats_dir_kws)
+            elif onthefly == 'reshuffle':
+                options['catalog']['reshuffle'] = {'merged_data_fn': tools.get_catalog_fn(kind='data', **(options['catalog'] | dict(region='ALL')))}
+                get_stats_fn = functools.partial(tools.get_stats_fn, extra='reshuffle', **stats_dir_kws)
+            else:
+                get_stats_fn = functools.partial(tools.get_stats_fn, **stats_dir_kws)
+
+            options = fill_fiducial_options(options)
+            if True: #onthefly:
+                for tracer in options['catalog']:
+                    options['catalog'][tracer]['expand'] = {'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=options['catalog'][tracer]['nran']), 'from_data': ['Z', 'WEIGHT_SYS', 'FRAC_TLOBS_TILES']}
+            compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
+
+    # postprocess
+    if postprocess:
+        postprocess_options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, weight=weight, imock=imocks[0]), imocks=imocks, combine_regions={'stats': stats}, mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True})
+        postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **postprocess_options)
+
+
+def postprocess_stats(tracer='LRG', analysis='full_shape', project='', version='glam-uchuu-v2-altmtl', onthefly=None, imocks=[150], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum'], weight='default-FKP', postprocess=['combine_regions'], zranges=None, **kwargs):
+    from clustering_statistics import postprocess_stats_from_options
+    if zranges is None:
+        zranges = tools.propose_fiducial('zranges', tracer, analysis=analysis)
+    options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, weight=weight, imock=imocks[0]), imocks=imocks, combine_regions={'stats': stats}, mesh2_spectrum={'cut': True, 'auw': True}, window_mesh2_spectrum={'cut': True})
+    stats_dir_kws = dict(stats_dir=stats_dir, project=project)
+    if onthefly == 'complete':
+        get_stats_fn = functools.partial(tools.get_stats_fn, extra='complete', **stats_dir_kws)
+    elif onthefly == 'reshuffle':
+        get_stats_fn = functools.partial(tools.get_stats_fn, extra='reshuffle', **stats_dir_kws)
+    else:
+        get_stats_fn = functools.partial(tools.get_stats_fn, **stats_dir_kws)
+
+    postprocess_stats_from_options(postprocess, get_stats_fn=get_stats_fn, **options)
+
 
 
 if __name__ == '__main__':
-    
-    # version = 'glam-uchuu-v1-altmtl'
-    version = 'holi-v1-altmtl'
-    
-    # mode = 'slurm'
-    # imocks2run = np.arange(100, 150+1)
-    # analysis = 'png_local' #'full_shape'
-    # tracers  = ['LRG', 'ELG_LOPnotqso', 'QSO']
-    # cai_dir    = Path(f'/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe/')
-    # stats_dir  = cai_dir / analysis
-    # merged_dir = cai_dir / version / 'merged'
-    # noric = True
-    
-    mode = 'interactive'
-    if 'glam' in version:
-        imocks2run = np.arange(100,105+1)
-    else:
-        imocks2run = np.arange(201,205+1)
-    analysis = 'png_local'
-    tracers = ['LRG']
-    noric_list = [True,False]
-    cai_dir    = Path(f'/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe/')
-    stats_dir  = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' / version / analysis
-    merged_dir = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' / version / 'merged'
-    # merged_dir = cai_dir / version / 'merged'
 
-    for noric in noric_list:
-        if analysis == 'full_shape':
-            if noric:
-                stats   = ['mesh2_spectrum', 'mesh3_spectrum']
-                weights = ['default-noimsys-FKP']
-            else:
-                stats   = ['mesh2_spectrum', 'mesh3_spectrum']
-                weights = ['default-noimsys-FKP','default-FKP']
-        elif analysis == 'png_local':
-            stats   = ['mesh2_spectrum']
-            # if noric:
-            #     # weights = ['default-noimsys-oqe','default-oqe']
-            #     weights = ['default-noimsys-oqe']
-            # else:
-            #     weights = ['default-noimsys-oqe','default-oqe']
-            weights = ['test']#,'default-noimsys-FKP']
+    stats, postprocess = [], []
+    version  = 'glam-uchuu-v2-altmtl'
+    check_for_existing_measurements = True
+    
+    # run on interactive node
+    # mode = 'interactive'
+    # imocks2run = 150 + np.arange(1)
+    # stats_dir  = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' 
+    
+    # to run job
+    mode = 'slurm'
+    imocks2run = 150 + np.arange(50)
+    stats_dir  = tools.base_stats_dir
+
+    # run fiducial full_shape
+    # stats       = ['mesh2_spectrum', 'mesh3_spectrum']
+    # postprocess = ['combine_regions']
+    # analysis = 'full_shape'
+    # project  = f'{analysis}/base'
+    # weight   = 'default-FKP'
+    # regions  = ['NGC','SGC']
+    # max_mocks_per_batch = 10
+
+    # run data_splits for lensing group with full_shape setup 
+    stats   = ['mesh2_spectrum']
+    analysis = 'full_shape'
+    project = f'{analysis}/data_splits'
+    weight  = 'default-FKP'
+    regions = ['N', 'NGCnoN', 'S', 'SGCnoDES', 'SnoDES', 'DES', 'ACT_DR6', 'PLANCK_PR4'] #, 'GAL040', 'GAL060']
+    # regions = ['GAL040', 'GAL060']
+    max_mocks_per_batch = 5 
+
+    # run fiducial local_png
+    # stats       = ['mesh2_spectrum']
+    # postprocess = ['combine_regions']
+    # analysis = 'local_png'
+    # project  = f'{analysis}/base'
+    # weight   = 'default-FKP-oqe'
+    # regions  = ['NGC', 'SGC']
+    # max_mocks_per_batch = 10
+
+    onthefly = None
+    zranges  = None
+    
+    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO']:
+        if check_for_existing_measurements:
+            exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=imocks2run)[:2]
+            imocks = exists[1]['imock']
+            rerun = []
+            for zrange in tools.propose_fiducial('zranges', tracer, analysis=analysis):
+                for kind in stats:
+                    stats_kws = dict(basis='sugiyama-diagonal', kind=kind, stats_dir=Path(str(stats_dir).replace('global','dvs_ro')), 
+                                     tracer=tracer, region=regions[-1], weight=weight, zrange=zrange, version=version, project=project)
+                    rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, **stats_kws), test_if_readable=True, imock=imocks2run)
+                    rerun += [imock for imock in imocks if (imock in unreadable[1]['imock']) or (imock not in rexists[1]['imock'])]
+            imocks = sorted(set(rerun))
         else:
-            raise ValueError(f'{analysis} not supported.')
-            
-        for tracer in tracers:
-            for weight in weights:
-                if True:
-                    exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=imocks2run)[:2]
-                    imocks = exists[1]['imock']
-                    rerun = []
-                    for zrange in tools.propose_fiducial('zranges', tracer, analysis=analysis):
-                        for kind in stats:
-                            stats_kws = dict(basis='sugiyama-diagonal', kind=kind, stats_dir=stats_dir, tracer=tracer, region='GCcomb', weight=weight, zrange=zrange,
-                                             version=version, extra='noric' if noric else '')
-                            rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, **stats_kws), test_if_readable=True, imock=imocks2run)
-                            rerun += [imock for imock in imocks if (imock in unreadable[1]['imock']) or (imock not in rexists[1]['imock'])]
-                    imocks = sorted(set(rerun))
-                batch_imocks = np.array_split(imocks, max(len(imocks) // 10, 1)) if len(imocks) else []
-                for _imocks in batch_imocks:
-                    run_stats_kws = dict(tracer=tracer, version=version, imocks=_imocks, stats_dir=stats_dir, merged_dir=merged_dir, stats=stats, analysis=analysis, weight=weight, noric=noric)
-                    if mode == 'interactive':
-                        run_stats(**run_stats_kws)
-                    else:
-                        _tm = tm if tracer in ['LRG'] else tm80
-                        _tm.python_app(run_stats)(**run_stats_kws)
+            imocks = imocks2run
+       
+        def get_run_stats():
+            _tm = tm80
+            if tracer in ['LRG']:
+                _tm = tm
+            if any('window_mesh3' in stat for stat in stats):
+                _tm = tmw
+            return run_stats if mode == 'interactive' else _tm.python_app(run_stats)
 
-                        
+        run_stats_kws = dict(tracer=tracer, stats_dir=stats_dir, project=project, version=version, stats=stats, analysis=analysis, onthefly=onthefly, zranges=zranges, regions=regions, weight=weight, postprocess=postprocess)
+        if True:
+            if any('window' in stat for stat in stats):
+                _imocks = [201]
+                nbatches = 1
+                tasks = []
+                for ibatch in range(nbatches):
+                    task = get_run_stats()(imocks=_imocks, ibatch=(ibatch, nbatches), **run_stats_kws)
+                    tasks.append(task)
+                if nbatches >= 1:
+                    # Add dependence on other tasks
+                    get_run_stats()(imocks=_imocks, ibatch=nbatches, tasks=tasks, **run_stats_kws)
+            elif any('covariance' in stat for stat in stats):
+                get_run_stats()(imocks=[201], **run_stats_kws)
+            elif stats:
+                batch_imocks = np.array_split(imocks, max(len(imocks) // max_mocks_per_batch, 1)) if len(imocks) else []
+                for _imocks in batch_imocks:
+                    get_run_stats()(imocks=_imocks, **run_stats_kws)
+        # if postprocess:
+        #     postprocess_stats(imocks=imocks, **run_stats_kws)

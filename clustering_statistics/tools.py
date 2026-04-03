@@ -1,3 +1,16 @@
+"""
+Shared utilities for clusterin -statistics.
+
+Main functions
+--------------
+* `fill_fiducial_options`: Expand partial user options into full fiducial dictionaries.
+* `get_catalog_fn`: Construct input catalog filenames from analysis options.
+* `get_stats_fn`: Construct standardized output filenames for statistics.
+* `read_clustering_catalog`: Load and filter survey clustering catalogs.
+* `read_full_catalog`: Load full catalogs needed for specialized workflows.
+* `write_stats`: Serialize measured statistics to disk.
+"""
+
 import os
 import time
 import logging
@@ -37,13 +50,13 @@ def default_mpicomm(func: Callable):
     @functools.wraps(func)
     def wrapper(*args, mpicomm=None, **kwargs):
         if mpicomm is None:
-            from mpi4py import MPI
             mpicomm = MPI.COMM_WORLD
         return func(*args, mpicomm=mpicomm, **kwargs)
 
     return wrapper
 
 
+@functools.cache  # avoid reloading the footprint many times
 def load_footprint():
     #global footprint
     from regressis import footprint
@@ -142,21 +155,34 @@ def get_lensing_options(sample):
     raise ValueError('unknown lensing sample {}'.format(sample))
 
 
-def get_lensing_footprint(sample, threshold=0.1):
+@functools.cache
+def load_lensing_footprint(sample, threshold=0.1):
     # https://github.com/cosmodesi/DESI_Y3_x_CMB/blob/28bf7661a6ed02f81397d5db93d87344cd47d0d2/DESI_Y3_x_CMB/auxiliary/config_utils.py#L59
     import healpy as hp
     lensing_options = get_lensing_options(sample)
-    mask_path = lensing_options['file']
-    lensing_mask = hp.ud_grade(hp.read_map(mask_path, dtype=np.float32), lensing_options['healpix_nside']) # This is slow
+    mask_fn = lensing_options['file']
+    lensing_mask = hp.ud_grade(hp.read_map(mask_fn, dtype=np.float32), lensing_options['healpix_nside']) # This is slow
     if lensing_options['is_cmb_mask']:
         lensing_mask *= lensing_mask
 
     uses_galactic_coords = lensing_options["galactic_coordinates"]
     if uses_galactic_coords:
-        rotator = hp.Rotator(coord=['G','C'])
+        rotator = hp.Rotator(coord=['G', 'C'])
         lensing_mask = rotator.rotate_map_pixel(lensing_mask)
-    lensing_mask = hp.reorder(lensing_mask,r2n=True)
+    lensing_mask = hp.reorder(lensing_mask, r2n=True)
     return lensing_mask > threshold
+
+
+@functools.cache
+def load_galactic_mask(galactic_fraction_percent='GAL040'):
+    # Path to Planck Galactic plane mask
+    mask_fn = base_stats_dir / 'auxiliary_data' / 'HFI_Mask_GalPlane-apo0_2048_R2.00.fits'
+    galactic_mask = _read_catalog(mask_fn, mpicomm=MPI.COMM_SELF)
+
+    # Read mask and determine ordering from FITS header
+    is_nested = (galactic_mask.header['ORDERING'] == 'NESTED')
+    mask = galactic_mask[galactic_fraction_percent]
+    return mask, is_nested
 
 
 def get_galactic_mask(ra, dec, galactic_fraction_percent='GAL040'):
@@ -164,13 +190,7 @@ def get_galactic_mask(ra, dec, galactic_fraction_percent='GAL040'):
     import healpy as hp
     from astropy.coordinates import SkyCoord
     import astropy.units as u
-    # Path to Planck Galactic plane mask
-    mask_path = base_stats_dir / 'auxiliary_data' / 'HFI_Mask_GalPlane-apo0_2048_R2.00.fits'
-    galactic_mask = Catalog.read(mask_path)
-
-    # Read mask and determine ordering from FITS header
-    is_nested = (galactic_mask.header['ORDERING'] == 'NESTED')
-    mask = galactic_mask[galactic_fraction_percent]
+    mask, is_nested = load_galactic_mask(galactic_fraction_percent=galactic_fraction_percent)
 
     # Convert input positions from ecliptic to galactic coordinates
     # Assumes data['RA'] and data['DEC'] are ecliptic longitude/latitude in degrees
@@ -178,7 +198,7 @@ def get_galactic_mask(ra, dec, galactic_fraction_percent='GAL040'):
     l = coords.galactic.l.to(u.deg).value
     b = coords.galactic.b.to(u.deg).value
 
-    # Map galactic (l,b) to HEALPix pixel
+    # Map galactic (l, b) to HEALPix pixel
     nside = hp.get_nside(mask)
     th = (90.0 - b) * np.pi / 180.0
     phi = l * np.pi / 180.0
@@ -263,11 +283,11 @@ def select_region(ra, dec, region=None):
 
     # Other footprints
     if region == 'ACT_DR6':
-        act = get_lensing_footprint(region.lower())
+        act = load_lensing_footprint(region.lower())
         mask_act = act[hp.ang2pix(hp.get_nside(act), ra, dec, nest=True, lonlat=True)]
         return mask_act
     if region == 'PLANCK_PR4':
-        planck = get_lensing_footprint(region.lower())
+        planck = load_lensing_footprint(region.lower())
         mask_planck = planck[hp.ang2pix(hp.get_nside(planck), ra, dec, nest=True, lonlat=True)]
         return mask_planck
     if 'GAL' in region:
@@ -297,37 +317,6 @@ def compute_fiducial_selection_weights(catalog, stat='mesh3_spectrum', tracer=No
     return catalog
 
 
-@jax.jit
-def lininterp_1d(xp: jax.Array, y: jax.Array, xmin: jax.Array=0., step: jax.Array=1.):
-    """
-    xp are query points, y is a 1D array of samples spaced by `step` starting at `xmin`.
-
-    Parameters
-    ----------
-    xp : array-like
-        Query points.
-    y : array-like
-        Sampled values on a regular grid.
-    xmin : float, optional
-        Grid starting coordinate.
-    step : float, optional
-        Grid spacing.
-
-    Returns
-    -------
-    array-like
-        Interpolated values at xp using linear interpolation with clipping at boundaries.
-    """
-    fidx = (xp - xmin) / step
-    idx = jnp.floor(fidx).astype(jnp.int16)
-    fidx -= idx
-    toret = (1 - fidx) * y[idx] + fidx * y[idx + 1]
-    #return jnp.where((idx >= 0) & (idx < len(y)), toret, 0.)
-    toret = jnp.where(idx < 0, y[0], toret)
-    toret = jnp.where(idx > len(y) - 1, y[-1], toret)
-    return toret
-
-
 def get_interpolator_1d(x: jax.Array, y: jax.Array, order: int=1):
     """
     Return a 1D interpolator function for arrays x, y.
@@ -351,17 +340,11 @@ def get_interpolator_1d(x: jax.Array, y: jax.Array, order: int=1):
     """
     xmin, xmax = x[0], x[-1]
     step = (xmax - xmin) / (len(x) - 1)
-    is_lin = np.allclose(x, step * np.arange(len(x)) + xmin)
 
     if order == 1:
-        if is_lin:
 
-            def interp(xp):
-                return lininterp_1d(xp, y=y, xmin=xmin, step=step)
-        else:
-
-            def interp(xp):
-                return jnp.interp(xp, x, y)
+        def interp(xp):
+            return jnp.interp(xp, x, y)
 
     else:
         from interpax import Interpolator1D
@@ -784,9 +767,10 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
 
     Returns
     -------
-    fn : Path, list
+    fn : Path, tuple, list
         Catalog file name(s).
-        Multiple file names are returned as a list when region is 'ALL' or when kind is 'randoms' or 'full_randoms', or imock is '*'.
+        Return tuple of file names for each region if relevant. (e.g. 'ALL' => ['NGC', 'SGC'])
+        Return list of file names when kind is 'randoms' or 'full_randoms', or imock is '*'.
     """
     if region in ['N', 'NGC', 'NGCnoN']: region = 'NGC'
     elif region in ['SGC', 'SGCnoDES', 'DES', 'SSGC']: region = 'SGC'
@@ -799,7 +783,7 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
         if any(isinstance(fn_list, list) for fn_list in fn_lists):
             return list(zip(*fn_lists)) # return list of tuples (filename_NGC, filename_SGC)
         else:
-            return fn_lists
+            return tuple(fn_lists)
     nrans = nran
     if not isinstance(nran, list):
         nrans = list(range(nran))
@@ -881,13 +865,26 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             ext = 'h5' if 'full' in kind else 'h5'
             if kind == 'forfa_data':
                 return base_dir / f'forFA{imock:d}.fits'
- 
+
         elif version == 'glam-uchuu-v1-altmtl':
             base_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/GLAM-Uchuu_v1'
             cat_dir = base_dir / f'altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
             ext = 'h5'
             if kind == 'forfa_data':
                 return base_dir / f'forFA{imock:d}.fits'
+
+        elif version == 'glam-uchuu-v2-altmtl':
+            base_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/GLAM-Uchuu_v2'
+            cat_dir = base_dir / f'altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
+            ext = 'h5'
+            if kind == 'forfa_data':
+                return base_dir / f'forFA{imock:d}.fits'
+
+        elif version == 'glam-uchuu-v2-complete':
+            # TODO: Decide where to save complete version of the clustering catalogs.
+            base_dir = base_stats_dir / 'auxiliary_data' / version
+            cat_dir = base_dir / f'complete{imock:d}/loa-v1/mock{imock:d}/LSScats'
+            ext = 'h5'
 
         elif version == 'abacus-2ndgen-dr2-complete':
             if 'BGS' in tracer:
@@ -914,7 +911,7 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             base_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/AbacusHF_DR2v2'
             cat_dir = base_dir / f'altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
             ext = 'h5'
-        
+
         elif 'uchuu-hf' in version:
             if 'altmtl' in version:
                 #base_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/altmtl/')
@@ -1042,7 +1039,7 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH', '.')) / 'measurements', pro
     auw = '_auw' if auw else ''
     cut = '_thetacut' if cut else ''
     extra = f'_{extra}' if extra else ''
-       
+
     corr_type = 'smu'
     battrs = kwargs.get('battrs', None)
     if battrs is not None: corr_type = ''.join(list(battrs))
@@ -1358,13 +1355,13 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
     assert kind in ['data', 'randoms'], 'provide kind (data or randoms)'
     zrange, region, weight_type, imock, tracer = (kwargs.get(key) for key in ['zrange', 'region', 'weight', 'imock', 'tracer'])
     assert weight_type is not None, 'provide weight'
-    reshuffle_condition = (kind == 'randoms') and (isinstance(reshuffle, dict) or (reshuffle is not None))
+    reshuffle_condition = (kind == 'randoms') and (reshuffle is not None)
     if reshuffle_condition:
         # if randoms are going to be reshuffled, all regions are needed so we force it.
         fns = get_catalog_fn(kind=kind, **(kwargs | dict(region='ALL')))
     else:
         fns = get_catalog_fn(kind=kind, **kwargs)
-    if not isinstance(fns, (tuple, list)): fns = [fns]
+    if not isinstance(fns, list): fns = [fns]
     exists = {ff: os.path.exists(ff) for fn in fns for ff in (fn if isinstance(fn, (list, tuple)) else [fn])}
     if not all(exists.values()):
         raise IOError(f'Catalogs {[fn for fn, ex in exists.items() if not ex]} do not exist!')
@@ -1381,8 +1378,6 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
     if isinstance(complete, dict):
 
         def get_complete_data():
-            if complete_data is not None:
-                return complete_data
             full_data_fn = get_catalog_fn(kind='full_data', **(kwargs | dict(region='ALL')))
             forfa_data_fn = get_catalog_fn(kind='forfa_data', **(kwargs | dict(region='ALL')))
             nz = {region: np.loadtxt(get_catalog_fn(kind='nz', **(kwargs | dict(region=region))), unpack=True) for region in ['NGC', 'SGC']}
@@ -1390,7 +1385,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             forfa_data = _read_catalog(forfa_data_fn, mpicomm=MPI.COMM_SELF, backend='astropy')
             return complete_from_full_data(forfa_data, full_data, nz=nz, tracer=tracer,
                                     with_completeness=complete.get('with_completeness', True),
-                                    seed=42)
+                                    seed=complete.get('seed', 100 * imock))
 
         if kind == 'data':
             logger.info('On-the-fly complete data.')
@@ -1398,6 +1393,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             if isinstance(reshuffle, dict):
                 # To avoid recreating data
                 reshuffle['data_fn'] = complete_data
+            fns = [None]  # just one data catalog, already computed!
         elif kind == 'randoms':
             # Force reshuffling
             if not isinstance(reshuffle, dict):
@@ -1406,22 +1402,22 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
                 warnings.warn('When creating complete data on-the-fly, '
                               'pass a reshuffle dictionary when reading data catalog '
                               'to avoid recomputing data for randoms shuffling')
-                reshuffle['data_fn'] = complete_data = get_complete_data()
+                reshuffle['data_fn'] = get_complete_data()
             reshuffle.setdefault('merged_data_fn', reshuffle['data_fn'])
             logger.info('Reshuffling randoms to match on-the-fly complete data.')
             if isinstance(expand, dict):
-                expand['data_fn'] = get_complete_data()
+                expand['data_fn'] = reshuffle['data_fn']
 
     if kind == 'randoms' and isinstance(expand, dict):
-        from_data = expand.get('from_data', ['Z', 'WEIGHT_SYS', 'FRAC_TLOBS_TILES'][:-1])
         # No need to import anything from data if reshuffling is performed
-        if isinstance(reshuffle, dict): from_data = []
+        from_data = expand.get('from_data', [] if isinstance(reshuffle, dict) else ['Z', 'WEIGHT_SYS', 'FRAC_TLOBS_TILES'][:-1])
         from_randoms = expand.get('from_randoms', ['RA', 'DEC', 'NTILE'])
         parent_randoms_fn = expand['parent_randoms_fn']
         if not isinstance(parent_randoms_fn, (tuple, list)):
             parent_randoms_fn = [parent_randoms_fn]
         if mpicomm.rank == 0:
             logger.info('Expanding randoms')
+        # WARNING: order matters!
         parent_randoms = []
         for ifn, fn in enumerate(parent_randoms_fn):
             if fn not in expand:
@@ -1458,8 +1454,9 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             if mpicomm.rank == 0:
                 logger.info('Reshuffling randoms')
             merged_data = _read_catalog(merged_data_fn, mpicomm=MPI.COMM_SELF)
-        def reshuffle(catalog, seed):
-            return reshuffle_randoms(catalog, merged_data=merged_data, data=data, tracer=tracer, seed=seed)
+        seed = reshuffle.get('seed', 100 * imock)
+        def reshuffle(catalog, ifn, seed=seed):
+            return reshuffle_randoms(catalog, merged_data=merged_data, data=data, tracer=tracer, seed=seed + ifn)
     else:
         reshuffle = None
 
@@ -1480,7 +1477,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
                 if mpicomm.rank == 0:
                     t0 = time.time()
                     logger.info('Reshuffling randoms started.')
-                catalog = reshuffle(catalog, 100 * imock + ifn)
+                catalog = reshuffle(catalog, ifn)
                 if mpicomm.rank == 0:
                     logger.info(f'Reshuffling randoms completed in {time.time() - t0:2.1f} s')
 
@@ -1492,7 +1489,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
 
             if zrange is not None:
                 catalog = catalog[(catalog['Z'] >= zrange[0]) & (catalog['Z'] < zrange[1])]
-                if np.any(catalog['NX'] == 0):
+                if 'NX' in catalog and np.any(catalog['NX'] == 0):
                     # remove entries with NX=0
                     if mpicomm.rank == 0:
                         logger.info(f'Found and removed {(catalog['NX'] == 0).sum()} objects with NX=0 from {fn}')
@@ -1509,7 +1506,6 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
     for i, (irank, catalog) in enumerate(catalogs):
         if mpicomm.size > 1:
             catalog = Catalog.scatter(catalog, mpicomm=mpicomm, mpiroot=irank)
-
         if 'default' in weight_type:
             individual_weight = catalog['WEIGHT'].copy()
         else:
@@ -2043,7 +2039,7 @@ def reshuffle_randoms(randoms, merged_data, data, tracer, seed=42):
     #merged_data_wcomp_ntile = merged_data_wtotp / merged_data['WEIGHT']
 
     data_wcomp_ntile, data_ftile_ntile = {}, {}
-    merged_data_nz = -data.ones()
+    merged_data_nz = -merged_data.ones()
     # It looks like this operation was done for NGC, SGC separately
     for region in ['NGC', 'SGC']:
         mask_data = select_region(data['RA'], data['DEC'], region=region)
