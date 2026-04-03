@@ -20,6 +20,8 @@ doc/_build/
 **/bak
 **/_plots/*
 
+**/log
+
 # Unit test / coverage reports
 **/.coverage
 **/slurm*
