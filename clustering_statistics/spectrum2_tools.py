@@ -670,9 +670,11 @@ def compute_window_mesh2_spectrum_fm(
     data_to_randoms_ratio: float,
     catalog_split_seed: int,
     geo: bool,
+    ric: bool,
     ric_nbins: int,
     ric_regions: list[str],
     amr: bool,  # is optional
+    ellsout : list[int] | None,
     regression_maps: list[str] | None,
     templates_paths_kwargs: dict | None,
     amr_regions_zranges: list[tuple[str, tuple[float, float]]] | None,
@@ -704,13 +706,17 @@ def compute_window_mesh2_spectrum_fm(
     catalog_split_seed : int
         Random seed to use for the random split between "data" and "randoms" in the input randoms catalogs.
     geo : bool
-        Whether to return the sampled window for the geometry. If False, only the RIC (±AMR) contribution is returned.
+        Whether to return the sampled window for the geometry. If False, not computed.
+    ric : bool
+        Wether to return the sampled window for the geometry + RIC (+/- AMR if amr=True). If False, not computed.
     ric_nbins : int
         Number of radial bins to use for the RIC.
     ric_regions : list[str]
         Regions to use for the RIC, e.g. ``["N", "S"]`` or ``["N", "SnoDES", "DES]``.
     amr : bool
         Whether to apply the angular mode removal (AMR), i.e. to forward model the power loss due to linear angular systematics weights.
+    ellsout : list[int] | None
+        For which ells the window is computed. Default None and use ellsout extracted from corresponding power spectra. Usefull to split the computation.
     regression_maps : list[str] | None
         Names of the systematics templates to use for the AMR. Can be set to ``None`` if ``amr=False``.
     templates_paths_kwargs : dict
@@ -763,12 +769,9 @@ def compute_window_mesh2_spectrum_fm(
     def _update_fkp(data_weights, randoms_weights, fkp_field, estimator_weights):
         return fkp_field.clone(
             data=fkp_field.data.clone(
-                weights=data_weights * getattr(fkp_field.data, estimator_weights, 1.0),
-            ),
+                weights=data_weights * getattr(fkp_field.data, estimator_weights, 1.0)),
             randoms=fkp_field.randoms.clone(
-                weights=randoms_weights * getattr(fkp_field.randoms, estimator_weights, 1.0),
-            ),
-        )
+                weights=randoms_weights * getattr(fkp_field.randoms, estimator_weights, 1.0)))
 
     def _safe_divide(a, b):
         return jnp.where(b != 0, a / b, 0.0)
@@ -779,7 +782,7 @@ def compute_window_mesh2_spectrum_fm(
         columns_optimal_weights += getattr(optimal_weights, "columns", [])  # to compute optimal weights, e.g. for fnl
 
     # Recover output and mesh information from the observable spectrum
-    ellsout = spectrum.ells
+    ellsout = ellsout or spectrum.ells
     los = spectrum.attrs["los"]  # this has to match with theory input
     if los in ["endpoint", "firstpoint"]:
         los = "local"
@@ -793,14 +796,12 @@ def compute_window_mesh2_spectrum_fm(
         get_data_randoms = [wrap(_get_data_randoms) for _get_data_randoms in get_data_randoms]
 
         if amr:  # Add photometric template values to the catalogs, if AMR is applied, as they are needed for the regression
-
             def wrap(f):
                 return lambda: _add_photometric_template_values(f())
 
             get_data_randoms = [wrap(_get_data_randoms) for _get_data_randoms in get_data_randoms]
 
         if len(spectrum_regions) > 0:  # Split catalogs into pk regions, if specified
-
             def wrap(f, spectrum_region):
                 return lambda: _select_region(f(), spectrum_region)
 
@@ -812,8 +813,8 @@ def compute_window_mesh2_spectrum_fm(
             *get_data_randoms,
             mattrs=mattrs,
             add_randoms=["IDS", "WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights],
-            add_data=["WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights],
-        )
+            add_data=["WEIGHT_FKP", "Z", *regression_maps, *columns_optimal_weights])
+        
         all_randoms = [particles["randoms"] for particles in all_particles]
         all_data = [particles["data"] for particles in all_particles]
         del all_particles
@@ -833,8 +834,7 @@ def compute_window_mesh2_spectrum_fm(
                 extra.update({"template_values": template_values})
             # extra already has weight_FKP, just remove from weights=indweights which contains FKP weights
             all_randoms[iregion] = all_randoms[iregion].clone(
-                extra=extra, weights=_safe_divide(all_randoms[iregion].weights, all_randoms[iregion].extra["WEIGHT_FKP"])
-            )
+                extra=extra, weights=_safe_divide(all_randoms[iregion].weights, all_randoms[iregion].extra["WEIGHT_FKP"]))
 
             # Data
             extra = all_data[iregion].extra
@@ -844,8 +844,7 @@ def compute_window_mesh2_spectrum_fm(
             all_data[iregion] = all_data[iregion].clone(extra=extra, weights=_safe_divide(all_data[iregion].weights, all_data[iregion].extra["WEIGHT_FKP"]))
         del extra
 
-        if jax.process_index() == 0:
-            logger.info("Catalogs ready, starting preparation...")
+        if jax.process_index() == 0: logger.info("Catalogs ready, starting preparation...")
 
         # Prepare arguments for the window computation function
         ric_args = prepare_RIC(data=all_data, randoms=all_randoms, regions=ric_regions, n_bins=ric_nbins, apply_to="randoms")
@@ -871,16 +870,14 @@ def compute_window_mesh2_spectrum_fm(
         del all_data, all_randoms
         # Compute FKP normalization for each region, with the estimator weights, and for each ell if optimal weights are applied
         if optimal_weights is None:
-            if jax.process_index() == 0:
-                logger.info("Using FKP weights, computing window for all ells at once.")
+            if jax.process_index() == 0: logger.info("Using FKP weights, computing window for all ells at once.")
             # Using FKP weights which are symetrical, so this remains an autocorr
             binner = BinMesh2SpectrumPoles(fkp_fields[0].attrs, edges=spectrum.get(0).edges("k"), ells=ellsout)  # TODO: check edges are ok
 
             # Temporarily add FKP weights to the fkp_fields weights for norm and analytical computation
             fkp_norms = [
                 compute_fkp2_normalization(_update_fkp(fkp.data.weights, fkp.randoms.weights, fkp, "WEIGHT_FKP"), bin=binner, cellsize=10.0)
-                for fkp in fkp_fields
-            ]
+                for fkp in fkp_fields]
 
             ## FM based computations
             windows = {}
@@ -895,8 +892,8 @@ def compute_window_mesh2_spectrum_fm(
                 "mock_survey_args": (*fkp_fields,),
                 "static_argnames": ["los", "unitary_amplitude", "estimator_weights"],
                 "tmpdir": None,  # No temporary output
-                "survey_names": spectrum_regions,
-            }
+                "survey_names": spectrum_regions}
+
             mock_survey_kwargs = {
                 "los": los,
                 "unitary_amplitude": unitary_amplitude,
@@ -905,78 +902,53 @@ def compute_window_mesh2_spectrum_fm(
                 "binner": binner,
                 "estimator_weights": "WEIGHT_FKP",
                 "data_regions": ric_args.data_regions,
-                "randoms_regions": ric_args.randoms_regions,
-            }
+                "randoms_regions": ric_args.randoms_regions}
 
             if geo:
-                if jax.process_index() == 0:
-                    logger.info("Computing geometry window with desiwinds...")
-                _, windows_fm_geo = get_window_spikes(
-                    **window_fm_kw,
-                    mock_survey_kwargs=mock_survey_kwargs | {"ric_args": None, "amr_args": None},
-                )
-
+                if jax.process_index() == 0: logger.info("Computing geometry window with desiwinds...")
+                _, windows_fm_geo = get_window_spikes(**window_fm_kw, mock_survey_kwargs=mock_survey_kwargs | {"ric_args": None, "amr_args": None})
                 windows["geometry"] = windows_fm_geo
 
-            if jax.process_index() == 0:
-                logger.info("Computing total window with desiwinds...")
-            _, windows_fm = get_window_spikes(
-                **window_fm_kw,
-                mock_survey_kwargs=mock_survey_kwargs | {"ric_args": ric_args, "amr_args": amr_args},
-            )
+            if ric:
+                if jax.process_index() == 0: logger.info("Computing total window with desiwinds...")
+                _, windows_fm = get_window_spikes(**window_fm_kw, mock_survey_kwargs=mock_survey_kwargs | {"ric_args": ric_args, "amr_args": amr_args})
+                windows[extra_effects] = windows_fm
 
-            windows[extra_effects] = windows_fm
-            if jax.process_index() == 0:
-                logger.info("desiwinds window computation finished.")
-
+            if jax.process_index() == 0: logger.info("desiwinds window computation finished.")
             return windows
 
         else:
-            if jax.process_index() == 0:
-                logger.info("Using optimal weights, computing windows for each ell separately.")
             # Optimal weights: non symmetrical, so need to compute "cross-correlation" (same tracer, different weights) + not the same for all ells
             # Proceed ell per ell and sum the windows at the end
+            if jax.process_index() == 0: logger.info("Using optimal weights, computing windows for each ell separately.")
+
             def _attach_weights(fkp_field, ell):
                 data_w1, data_w2 = next(
-                    optimal_weights(
-                        ell,
-                        [
-                            {column: fkp_field.data.extra[column] for column in ["Z", *columns_optimal_weights]}
-                            | {"INDWEIGHT": fkp_field.data.weights * fkp_field.data.extra["WEIGHT_FKP"]}
-                        ],
-                    )
-                )
+                    optimal_weights(ell,
+                                    [{column: fkp_field.data.extra[column] for column in ["Z", *columns_optimal_weights]}
+                                    | {"INDWEIGHT": fkp_field.data.weights * fkp_field.data.extra["WEIGHT_FKP"]}]))
 
                 randoms_w1, randoms_w2 = next(
-                    optimal_weights(
-                        ell,
-                        [
-                            {column: fkp_field.randoms.extra[column] for column in ["Z", *columns_optimal_weights]}
-                            | {"INDWEIGHT": fkp_field.randoms.weights * fkp_field.randoms.extra["WEIGHT_FKP"]}
-                        ],
-                    )
-                )
+                    optimal_weights(ell,
+                                    [{column: fkp_field.randoms.extra[column] for column in ["Z", *columns_optimal_weights]}
+                                    | {"INDWEIGHT": fkp_field.randoms.weights * fkp_field.randoms.extra["WEIGHT_FKP"]}]))
+
                 # These weights also contain real weights and FKP weights ; need to remove the real weights to isolate the "estimator weights" to apply at computation time in the FM
                 return fkp_field.clone(
                     data=fkp_field.data.clone(
                         extra=fkp_field.data.extra
-                        | {
-                            "weight_optimal_1": _safe_divide(data_w1, fkp_field.data.weights),
-                            "weight_optimal_2": _safe_divide(data_w2, fkp_field.data.weights),
-                        }
-                    ),
+                        | {"weight_optimal_1": _safe_divide(data_w1, fkp_field.data.weights),
+                           "weight_optimal_2": _safe_divide(data_w2, fkp_field.data.weights)}),
                     randoms=fkp_field.randoms.clone(
                         extra=fkp_field.randoms.extra
-                        | {
-                            "weight_optimal_1": _safe_divide(randoms_w1, fkp_field.randoms.weights),
-                            "weight_optimal_2": _safe_divide(randoms_w2, fkp_field.randoms.weights),
-                        }
-                    ),
-                )
+                        | {"weight_optimal_1": _safe_divide(randoms_w1, fkp_field.randoms.weights),
+                           "weight_optimal_2": _safe_divide(randoms_w2, fkp_field.randoms.weights)}))
 
-            windows = {extra_effects: {}}
+            windows = {}
             if geo:
                 windows["geometry"] = {}
+            if ric: 
+                windows['extrac_effects'] = {}
 
             for ell in ellsout:
                 binner = BinMesh2SpectrumPoles(fkp_fields[0].attrs, edges=spectrum.get(ell).edges("k"), ells=[ell])  # TODO: check edges are ok
@@ -987,10 +959,8 @@ def compute_window_mesh2_spectrum_fm(
                         _update_fkp(fkp.data.weights, fkp.randoms.weights, fkp, "weight_optimal_1"),
                         _update_fkp(fkp.data.weights, fkp.randoms.weights, fkp, "weight_optimal_2"),
                         bin=binner,
-                        cellsize=10.0,
-                    )
-                    for fkp in fkp_fields
-                ]
+                        cellsize=10.0)
+                    for fkp in fkp_fields]
 
                 # Shared window FM arguments
                 window_fm_kw = {
@@ -1002,8 +972,8 @@ def compute_window_mesh2_spectrum_fm(
                     "mock_survey_args": [(fkp,) * 2 for fkp in fkp_fields],  # same FKP field but with different weights
                     "static_argnames": ["los", "unitary_amplitude", "estimator_weights"],
                     "tmpdir": None,  # No temporary output
-                    "survey_names": spectrum_regions,
-                }
+                    "survey_names": spectrum_regions}
+
                 mock_survey_kwargs = {
                     "los": los,
                     "unitary_amplitude": unitary_amplitude,
@@ -1012,33 +982,21 @@ def compute_window_mesh2_spectrum_fm(
                     "binner": binner,  # one ell only
                     "estimator_weights": ("weight_optimal_1", "weight_optimal_2"),
                     "data_regions": ric_args.data_regions,
-                    "randoms_regions": ric_args.randoms_regions,
-                }
+                    "randoms_regions": ric_args.randoms_regions}
 
                 if geo:
-                    if jax.process_index() == 0:
-                        logger.info("Computing geometry window for ell=%i with desiwinds...", ell)
-                    _, _windows_fm_geo = get_window_spikes(
-                        **window_fm_kw,
-                        mock_survey_kwargs=mock_survey_kwargs | {"ric_args": None, "amr_args": None},
-                    )
-
+                    if jax.process_index() == 0: logger.info("Computing geometry window for ell=%i with desiwinds...", ell)
+                    _, _windows_fm_geo = get_window_spikes(**window_fm_kw, mock_survey_kwargs=mock_survey_kwargs | {"ric_args": None, "amr_args": None})
                     windows["geometry"][ell] = _windows_fm_geo
 
-                if jax.process_index() == 0:
-                    logger.info("Computing total window for ell=%i with desiwinds...", ell)
-                _, _windows_fm = get_window_spikes(
-                    **window_fm_kw,
-                    mock_survey_kwargs=mock_survey_kwargs | {"ric_args": (ric_args,) * 2, "amr_args": (amr_args,) * 2},
-                )
+                if ric: 
+                    if jax.process_index() == 0: logger.info("Computing total window for ell=%i with desiwinds...", ell)
+                    _, _windows_fm = get_window_spikes(**window_fm_kw, mock_survey_kwargs=mock_survey_kwargs | {"ric_args": (ric_args,) * 2, "amr_args": (amr_args,) * 2})
+                    windows[extra_effects][ell] = _windows_fm
 
-                windows[extra_effects][ell] = _windows_fm
-
-            if jax.process_index() == 0:
-                logger.info("desiwinds window computation finished.")
+            if jax.process_index() == 0: logger.info("desiwinds window computation finished.")
 
             # For each region, sum the windows over ells and apply control variate
-
             def _combine_ells(windows):
                 observables = [window.observable for window in windows]
                 observable = types.join(observables)
@@ -1048,13 +1006,11 @@ def compute_window_mesh2_spectrum_fm(
             if geo:
                 windows["geometry"] = {
                     spectrum_region: [_combine_ells([windows["geometry"][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
-                    for idx, spectrum_region in enumerate(spectrum_regions)
-                }
-
-            windows[extra_effects] = {
-                spectrum_region: [_combine_ells([windows[extra_effects][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
-                for idx, spectrum_region in enumerate(spectrum_regions)
-            }
+                    for idx, spectrum_region in enumerate(spectrum_regions)}
+            if ric:
+                windows[extra_effects] = {
+                    spectrum_region: [_combine_ells([windows[extra_effects][ell][ireal][idx] for ell in ellsout]) for ireal in range(n_realizations)]
+                    for idx, spectrum_region in enumerate(spectrum_regions)}
 
             return windows
 

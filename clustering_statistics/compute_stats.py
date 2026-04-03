@@ -304,11 +304,9 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
         # Synchronize across all processes before proceeding to windows
         jax.experimental.multihost_utils.sync_global_devices('spectrum')  # wait for the writer
 
-        # Window matrix computation
-        funcs = {
-            "window_mesh2_spectrum": compute_window_mesh2_spectrum,
-            "window_mesh3_spectrum": compute_window_mesh3_spectrum,
-        }
+        # Window matrix
+        funcs = {"window_mesh2_spectrum": compute_window_mesh2_spectrum,
+                 "window_mesh3_spectrum": compute_window_mesh3_spectrum}
 
         for stat, func in funcs.items():
             if stat in stats:
@@ -375,7 +373,6 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
 
         # Window matrix using forward model (for RIC and AMR effects)
         funcs = {"window_mesh2_spectrum_fm": compute_window_mesh2_spectrum_fm}
-
         for stat, func in funcs.items():
             if stat in stats:
                 # Forward model window only supports auto-correlations currently
@@ -439,11 +436,7 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                         [run_preliminary_fit_mesh2_spectrum(data=spectrum, window=window) for spectrum, window in zip(spectra, windows, strict=True)]
                     )
                     spectrum = types.sum(spectra)
-                    theory_fn = get_stats_fn(
-                        kind=theory_stat,
-                        catalog=(fn_catalog_options[tracers[0]]),
-                    )
-                    # Write fiducial theory to disk
+                    theory_fn = get_stats_fn(kind=theory_stat, catalog=(fn_catalog_options[tracers[0]]))
                     tools.write_stats(theory_fn, theory)
 
                 # Synchronize before reading theory
@@ -459,10 +452,8 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                     for spectrum_region in window_options["spectrum_regions"]:
                         fn_window_options = options[spectrum_stat] | fn_window_options
                         spectrum_fn[spectrum_region] = get_stats_fn(
-                            kind=spectrum_stat,
-                            catalog=fn_catalog_options,
-                            **(options[spectrum_stat] | {"auw": False, "cut": False} | {"region": spectrum_region}),
-                        )
+                            kind=spectrum_stat, catalog=fn_catalog_options,
+                            **(options[spectrum_stat] | {"auw": False, "cut": False} | {"region": spectrum_region}))
                     spectrum = types.sum([types.read(spectrum_fn[spectrum_region]) for spectrum_region in window_options["spectrum_regions"]])
                 else:
                     spectrum = types.read(spectrum_fn)
@@ -473,10 +464,14 @@ def compute_stats_from_options(stats, analysis='full_shape', cache=None,
                 for effect in window:  # geo, RIC or RIC+AMR
                     for spectrum_region in window[effect]:  # eg NGC, SGC
                         for i, seed in enumerate(window_options["seeds"]):
-                            fn = get_stats_fn(
-                                kind=stat, catalog=fn_catalog_options, **(fn_window_options | {"extra": f"{effect}_seed={seed}", "region": spectrum_region})
-                            )
-                            tools.write_stats(fn, window[effect][spectrum_region][i])
+                            if window_options['ellsout'] is None:
+                                extra = f"{effect}_seed={seed}"
+                            else:
+                                listell = "".join(map(str, window_options['ellsout']))
+                                extra = f'{effect}_{listell}_seed={seed}'
+
+                            options = fn_window_options | {"extra": extra, "region": spectrum_region}
+                            tools.write_stats(get_stats_fn(kind=stat, catalog=fn_catalog_options, **options), window[effect][spectrum_region][i])
 
         # Covariance matrix computation
         funcs = {'covariance_mesh2_spectrum': compute_covariance_mesh2_spectrum}
