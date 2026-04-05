@@ -610,6 +610,8 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
     def _format_log_fns(fns):
         if not isinstance(fns, list):
             return str(fns)
+        if not fns:
+            return '<no files>'
         if len(fns) <= 1:
             return str(fns[0])
         fns = [str(fn) for fn in fns]
@@ -618,6 +620,11 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
         if prefix or suffix:
             return f'{prefix}*{suffix}'
         return '*'
+
+    def _format_missing_data_context(stat, file_kw, fns):
+        fields = ['stats_dir', 'version', 'tracer', 'zrange', 'region', 'weight', 'imock']
+        context = ', '.join(f'{name}={file_kw[name]!r}' for name in fields if name in file_kw)
+        return f'No measurement files found for {stat} ({context}); resolved lookup: {_format_log_fns(fns)}'
 
     # Loading data, window
     all_data_fns, all_imocks, joint_labels, selects = [], [], {'observables': [], 'tracers': []}, []
@@ -635,6 +642,9 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
     data = get_from_cache(cache_data_fn)
     window = get_from_cache(cache_window_fn)
     if data is None or window is None:
+        for iobs, (stat, labels, file_kw, kw) in enumerate(iter_stat_tracer_combinations(observables_options)):
+            if not all_data_fns[iobs]:
+                raise FileNotFoundError(_format_missing_data_context(stat, file_kw, all_data_fns[iobs]))
         if mpicomm.rank == 0:
             data, windows = [], []
             for iobs, (stat, labels, file_kw, kw) in enumerate(iter_stat_tracer_combinations(observables_options)):

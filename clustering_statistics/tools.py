@@ -1492,7 +1492,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
                 if 'NX' in catalog and np.any(catalog['NX'] == 0):
                     # remove entries with NX=0
                     if mpicomm.rank == 0:
-                        logger.info(f'Found and removed {(catalog['NX'] == 0).sum()} objects with NX=0 from {fn}')
+                        logger.info(f"Found and removed {(catalog['NX'] == 0).sum()} objects with NX=0 from {fn}")
                     catalog = catalog[catalog['NX'] != 0]
             if 'bitwise' in weight_type:
                 # ADM: I guess this is because we want to restrict to TILE-intersections where we have observed something?
