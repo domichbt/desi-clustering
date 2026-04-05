@@ -651,7 +651,6 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
             if all(tracer == tracers[0] for tracer in tracers):
                 tracers = tracers[0]
             fn = get_stats_fn(kind=f'covariance_{stat}' + source, **(file_kw | dict(tracer=tracers)))
-            print(fn)
             if fn.exists():
                 covariances.append(types.read(fn))
         if not covariances:
@@ -910,7 +909,8 @@ def fill_fiducial_observable_options(options):
     """Fill missing observable options with fiducial values."""
     options = dict(options)
     stat = options['stat']['kind']
-    tracer, zrange = (options['catalog'][name] for name in ['tracer', 'zrange'])
+    tracer = options['catalog'].get('tracer', None)
+    zrange = options['catalog'].get('zrange', None)
     fiducial_options = propose_fiducial_observable_options(stat, tracer, zrange)
     options = fiducial_options | options
     for key, value in fiducial_options.items():
@@ -993,6 +993,74 @@ def generate_likelihood_options_helper(stats=('mesh2_spectrum', 'mesh3_spectrum'
         observable_options['emulator'] = emulator_options
         observables.append(observable_options)
     covariance = {'version': covariance, 'stats_dir': stats_dir}
+    return fill_fiducial_likelihood_options({'observables': observables, 'covariance': covariance})
+
+
+def generate_box_likelihood_options_helper(
+        stats=('mesh2_spectrum',),
+        tracer='LRG',
+        zsnap=0.800,
+        cosmo='000',
+        hod='',
+        los='z',
+        version='abacus-2ndgen',
+        covariance_version='ezmock-dr1',
+        stats_dir=Path('/dvs_ro/cfs/cdirs/desicollab/mocks/cai/LSS/DA2/mocks/desipipe/box'),
+        emulator=True):
+    """
+    Convenience helper that builds a dictionary of likelihood options for cubic box mocks.
+
+    Parameters
+    ----------
+    stats : list
+        Statistics to fit, e.g. ['mesh2_spectrum', 'mesh3_spectrum'].
+    tracer : str
+        Simple tracer name ('LRG', 'ELG', 'QSO').
+    zsnap : float
+        Box snapshot redshift (e.g. 0.800 for LRG mid-z bin).
+    cosmo : str
+        Cosmology label (e.g. '000').
+    hod : str
+        HOD flavor string (empty string for abacus-2ndgen baseline).
+    los : str
+        Line-of-sight direction ('x', 'y', or 'z').
+    version : str
+        Version subdirectory under stats_dir for the data vector (e.g. 'abacus-2ndgen').
+    covariance_version : str
+        Version subdirectory for the covariance mocks (e.g. 'ezmock-dr1').
+    stats_dir : Path
+        Base directory containing version-named subdirectories of box measurements.
+    emulator : bool or dict
+        Emulator configuration.
+
+    Returns
+    -------
+    likelihood_options : dict
+        Dictionary with keys ['observables', 'covariance'].
+    """
+    if isinstance(stats, str):
+        stats = [stats]
+    simple_tracer = get_simple_tracer(_make_tuple(tracer))
+    observables = []
+    for stat in stats:
+        catalog = {
+            'tracer': simple_tracer,
+            'zsnap': zsnap,
+            'cosmo': cosmo,
+            'hod': hod,
+            'los': los,
+            'version': version,
+            'imock': '*',
+            'stats_dir': stats_dir,
+        }
+        observable_options = {'stat': {'kind': stat}, 'catalog': catalog}
+        if emulator is False: emulator_options = {'name': ''}
+        elif emulator is True: emulator_options = {}
+        else: emulator_options = dict(emulator)
+        observable_options['emulator'] = emulator_options
+        observables.append(observable_options)
+    covariance = {'source': 'mock', 'version': covariance_version, 'stats_dir': stats_dir,
+                  'corrections': ['hartlap', 'percival']}
     return fill_fiducial_likelihood_options({'observables': observables, 'covariance': covariance})
 
 
@@ -1104,14 +1172,18 @@ def _str_from_observable_options(options: dict, level: int=None) -> str:
             stracer = get_simple_tracer(tracer)
             catalog_options = catalog[tracer]
             found = False
-            for tracerz, zrange in translate_tracerz.items():
-                if tracerz.startswith(stracer) and np.allclose(catalog_options['zrange'], zrange):
-                    stracer = tracerz  # e.g. LRG1
-                    found = True
-                    break
+            if 'zrange' in catalog_options:
+                for tracerz, zrange in translate_tracerz.items():
+                    if tracerz.startswith(stracer) and np.allclose(catalog_options['zrange'], zrange):
+                        stracer = tracerz  # e.g. LRG1
+                        found = True
+                        break
             tracer_catalog_str = [stracer]
-            if not found or level['catalog'] >= 2:
-                tracer_catalog_str.append(_str_zrange(catalog_options['zrange']))
+            if 'zrange' in catalog_options:
+                if not found or level['catalog'] >= 2:
+                    tracer_catalog_str.append(_str_zrange(catalog_options['zrange']))
+            elif 'zsnap' in catalog_options:
+                tracer_catalog_str.append(f'z{float2str(catalog_options["zsnap"], prec_min=1, prec_max=5)}')
             if level['catalog'] >= 3:
                 tracer_catalog_str.append(catalog_options['region'])
             if level['catalog'] >= 4:
