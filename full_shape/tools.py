@@ -576,12 +576,55 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
         observable = observable.get(labels)
         return observable
 
+    def _get_mock_stats_fn(stat, file_kw):
+        stats_dir = Path(file_kw.pop('stats_dir'))
+        version = file_kw.pop('version', None)
+        if isinstance(version, str) and version.startswith('ezmock'):
+            tracer = get_simple_tracer(_make_tuple(file_kw['tracer']))
+            tracer = tracer[0] if isinstance(tracer, tuple) else tracer
+            zsnap = float2str(file_kw['zsnap'], 3, 3)
+            imock = file_kw['imock']
+            kind = {'mesh2_spectrum': 'mesh2_spectrum_poles'}.get(stat, stat)
+            if 'mesh3' in kind:
+                basis = file_kw.get('basis', None)
+                basis = f'_{basis}' if basis else ''
+                kind = f'mesh3_spectrum{basis}_poles'
+            return stats_dir / version / f'{kind}_{tracer}_z{zsnap}_{imock}.h5'
+        def _has_existing(fn):
+            if isinstance(fn, list):
+                return len(fn) > 0
+            return fn.exists()
+        base_fn = get_stats_fn(kind=stat, stats_dir=stats_dir, version=version, **file_kw)
+        if _has_existing(base_fn):
+            return base_fn
+        project_fn = None
+        if version is not None and file_kw.get('imock', None) is not None:
+            project_fn = get_stats_fn(kind=stat, stats_dir=stats_dir, project=version, **file_kw)
+            if _has_existing(project_fn):
+                return project_fn
+        if version is None:
+            return base_fn
+        alt_fn = get_stats_fn(kind=stat, stats_dir=stats_dir, **file_kw)
+        return alt_fn
+
+    def _format_log_fns(fns):
+        if not isinstance(fns, list):
+            return str(fns)
+        if len(fns) <= 1:
+            return str(fns[0])
+        fns = [str(fn) for fn in fns]
+        prefix = os.path.commonprefix(fns)
+        suffix = os.path.commonprefix([fn[::-1] for fn in fns])[::-1]
+        if prefix or suffix:
+            return f'{prefix}*{suffix}'
+        return '*'
+
     # Loading data, window
     all_data_fns, all_imocks, joint_labels, selects = [], [], {'observables': [], 'tracers': []}, []
     for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
         file_kw = {'imock': None} | file_kw
         all_imocks.append(file_kw['imock'])
-        fn = get_stats_fn(kind=stat, **file_kw)
+        fn = _get_mock_stats_fn(stat, file_kw) if 'stats_dir' in file_kw else get_stats_fn(kind=stat, **file_kw)
         if not isinstance(fn, list): fn = [fn]
         all_data_fns.append(fn)
         for name in joint_labels:
@@ -596,6 +639,7 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
             data, windows = [], []
             for iobs, (stat, labels, file_kw, kw) in enumerate(iter_stat_tracer_combinations(observables_options)):
                 _data, _windows = [], []
+                logger.info(f"Reading data vector for {stat} from {_format_log_fns(all_data_fns[iobs])}")
                 for fn in all_data_fns[iobs]:
                     observable = types.read(fn)
                     if _with_project(observable):  # correlation function
@@ -611,7 +655,8 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
                     imock = file_kw.get('imock', None)
                     if imock is not None:  # FIXME
                         file_kw['imock'] = 0
-                    fn = get_stats_fn(kind=f'window_{stat}', **file_kw)
+                    fn = _get_mock_stats_fn(f'window_{stat}', file_kw) if 'stats_dir' in file_kw else get_stats_fn(kind=f'window_{stat}', **file_kw)
+                    logger.info(f"Reading window for {stat} from {fn}")
                     windows.append(types.read(fn))
             # Join mesh2_spectrum, mesh3_spectrum, etc.
             data = pack_stats(data, **joint_labels)
@@ -660,30 +705,44 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
     elif covariance_options['source'] == 'mock':
         # Mock-based covariance
         all_fns = []
+        covariance_log_patterns = []
+        all_imocks = None
         for stat, labels, file_kw, kw in iter_stat_tracer_combinations(observables_options):
             file_kw = file_kw | {'imock': '*'} | covariance_options
             file_kw['tracer'] = get_full_tracer(get_simple_tracer(file_kw['tracer']), version=file_kw['version'])
             imocks = file_kw.pop('imock')
             if imocks == '*':
                 imocks = list(range(2001))
-            all_fns.append([get_stats_fn(kind=stat, **file_kw, imock=imock) for imock in imocks])
+            if all_imocks is None:
+                all_imocks = list(imocks)
+            else:
+                all_imocks = [imock for imock in all_imocks if imock in imocks]
+            stat_fns = [_get_mock_stats_fn(stat, file_kw | {'imock': imock}) for imock in imocks]
+            all_fns.append(stat_fns)
+            covariance_log_patterns.append((stat, _format_log_fns(stat_fns)))
         all_fns = list(zip(*all_fns, strict=True))  # get a list of list of file names
         ifns_exists = []
         if mpicomm.rank == 0:
+            for stat, pattern in covariance_log_patterns:
+                logger.info(f"Looking for covariance mocks for {stat} at {pattern}")
             for ifn, fns in enumerate(all_fns):
                 if all(fn.exists() for fn in fns):
                     ifns_exists.append(ifn)
         ifns_exists = mpicomm.bcast(ifns_exists, root=0)
-        imocks_exists = [imocks[ifn] for ifn in ifns_exists]
+        imocks_exists = [all_imocks[ifn] for ifn in ifns_exists]
         cache_fn = get_cache_fn('covariance', dict(imocks=imocks_exists))
         covariance = get_from_cache(cache_fn)
         if covariance is None:
             mocks = []
             if mpicomm.rank == 0:
+                covariance_read_fns = [all_fns[ifn] for ifn in ifns_exists]
+                logger.info(f"Reading covariance for {len(covariance_read_fns)} mock realizations from "
+                            f"{_format_log_fns(covariance_read_fns)}")
                 for ifn in ifns_exists:
                     # Join mesh2_spectrum, mesh3_spectrum, etc.
                     observables = [types.read(fn) for fn in all_fns[ifn]]
-                    observables = [_apply_project(observable, select)[0] if _with_project(observable) else observable for observable, select in zip(observables, selects)]
+                    observables = [_apply_project(observable, select)[0] if _with_project(observable) else _apply_select(observable, select)
+                                   for observable, select in zip(observables, selects)]
                     mock = types.ObservableTree(observables, **joint_labels)
                     mocks.append(mock)
                 covariance = types.cov(mocks)
@@ -1006,6 +1065,7 @@ def generate_box_likelihood_options_helper(
         version='abacus-2ndgen',
         covariance_version='ezmock-dr1',
         stats_dir=Path('/dvs_ro/cfs/cdirs/desicollab/mocks/cai/LSS/DA2/mocks/desipipe/box'),
+        covariance_stats_dir=None,
         emulator=True):
     """
     Convenience helper that builds a dictionary of likelihood options for cubic box mocks.
@@ -1030,6 +1090,8 @@ def generate_box_likelihood_options_helper(
         Version subdirectory for the covariance mocks (e.g. 'ezmock-dr1').
     stats_dir : Path
         Base directory containing version-named subdirectories of box measurements.
+    covariance_stats_dir : Path, optional
+        Base directory containing version-named covariance mock measurements.
     emulator : bool or dict
         Emulator configuration.
 
@@ -1059,7 +1121,9 @@ def generate_box_likelihood_options_helper(
         else: emulator_options = dict(emulator)
         observable_options['emulator'] = emulator_options
         observables.append(observable_options)
-    covariance = {'source': 'mock', 'version': covariance_version, 'stats_dir': stats_dir,
+    if covariance_stats_dir is None:
+        covariance_stats_dir = stats_dir
+    covariance = {'source': 'mock', 'version': covariance_version, 'stats_dir': covariance_stats_dir,
                   'corrections': ['hartlap', 'percival']}
     return fill_fiducial_likelihood_options({'observables': observables, 'covariance': covariance})
 
