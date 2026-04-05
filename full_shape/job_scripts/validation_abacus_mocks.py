@@ -3,7 +3,7 @@ Script to run fits with Abacus mocks.
 To create and spawn the tasks on NERSC, use the following commands:
 ```bash
 source /global/common/software/desi/users/adematti/cosmodesi_environment.sh main
-python validation_abacus_mocks.py --dataset abacus-2ndgen-dr2-complete --tracer LRG1
+python validation_abacus_mocks.py --dataset abacus-2ndgen-dr2-complete --tracers LRG1 --todo profile sample
 ```
 """
 import argparse
@@ -49,8 +49,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', choices=datasets, default='abacus-2ndgen-dr2-complete',
                         help='Dataset to fit. Defaults to abacus-2ndgen-dr2-complete.')
-    parser.add_argument('--tracer', action='extend', nargs='+', dest='tracers', default=None,
-                        help='Tracer(s) to fit. Pass one or more values after --tracer. Defaults to LRG1.')
+    parser.add_argument('--todo', type=str, nargs='*', default=['profile'],
+                        choices=['build', 'profile', 'sample'],
+                        help='Run build, profile, and / or sample. Defaults to profile.')
+    parser.add_argument('--tracers', action='extend', nargs='+', default=None,
+                        help='Tracer(s) to fit. Pass one or more values after --tracers. Defaults to LRG1.')
     parser.add_argument('--fits_dir', type=str, default=None,
                         help='Base directory for fits. Defaults to $SCRATCH/fits_abacus_mocks or ./fits_abacus_mocks.')
     args = parser.parse_args()
@@ -61,5 +64,5 @@ if __name__ == '__main__':
     covariance = 'holi-v3-altmtl'
     stats_dir = Path('/global/cfs/cdirs/desicollab/science/cai/desi-clustering/dr2/summary_statistics/full_shape/base')
     tracers = args.tracers or ['LRG1']
-    run_fit(actions=['profile'], version=version, covariance=covariance, stats_dir=stats_dir,
+    run_fit(actions=args.todo, version=version, covariance=covariance, stats_dir=stats_dir,
             fits_dir=fits_dir, tracers=tracers)
