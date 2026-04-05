@@ -21,7 +21,7 @@ setup_logging()
 def run_fit(actions=('profile',), template='direct', version='abacus-2ndgen-dr2-complete',
             covariance='holi-v1-altmtl',
             stats_dir=Path('/global/cfs/cdirs/desicollab/science/cai/desi-clustering/dr2/summary_statistics/full_shape/base'),
-            fits_dir=Path(os.getenv('SCRATCH')) / 'fits',
+            fits_dir=Path(os.getenv('SCRATCH', '.')) / 'fits',
             stats=['mesh2_spectrum'], tracers=None):
     # Everything inside this function will be executed on the compute nodes;
     # This function must be self-contained; and cannot rely on imports from the outer scope.
@@ -51,9 +51,12 @@ if __name__ == '__main__':
                         help='Dataset to fit. Defaults to abacus-2ndgen-dr2-complete.')
     parser.add_argument('--tracer', action='extend', nargs='+', dest='tracers', default=None,
                         help='Tracer(s) to fit. Pass one or more values after --tracer. Defaults to LRG1.')
+    parser.add_argument('--fits_dir', type=str, default=None,
+                        help='Base directory for fits. Defaults to $SCRATCH/fits_abacus_mocks or ./fits_abacus_mocks.')
     args = parser.parse_args()
 
-    fits_dir = Path(os.getenv('SCRATCH')) / 'fits_abacus_mocks' / args.dataset
+    base_fits_dir = Path(args.fits_dir) if args.fits_dir is not None else Path(os.getenv('SCRATCH', '.')) / 'fits_abacus_mocks'
+    fits_dir = base_fits_dir / args.dataset
     version = args.dataset
     covariance = 'holi-v3-altmtl'
     stats_dir = Path('/global/cfs/cdirs/desicollab/science/cai/desi-clustering/dr2/summary_statistics/full_shape/base')
