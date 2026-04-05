@@ -98,7 +98,6 @@ if __name__ == '__main__':
 
     setup_logging()
     test_covariance()
-    exit()
     test_str()
     test_likelihood_bao()
     test_likelihood_full_shape()

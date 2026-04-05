@@ -1179,7 +1179,7 @@ def compute_covariance_mesh2_spectrum(*get_data_randoms, theory=None, fields=Non
             windows = windows.map(lambda window: interpolate_window_function(window, coords=coords), level=1)
         # Store raw correlation windows for diagnostics
         results['window_covariance_mesh2_correlation'] = windows
-
+ 
     # Convert correlation to power spectrum covariance matrix via FFTLog
     covariance = compute_spectrum2_covariance(windows, theory, flags=['smooth'] + (['fftlog'] if fftlog else []))
     # Update label names to match observable structure

@@ -118,7 +118,7 @@ def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, 
     params = {}
     if model == 'bao':
         tracer = get_simple_tracer(tracer)
-        recon = 'recon' in prior_basis
+        recon = bool(prior_basis)
         if tracer == 'BGS':
             sigmapar, sigmaper = 10., 6.5
             if recon: sigmapar, sigmaper = 8., 3.
@@ -281,7 +281,7 @@ def get_theory(stat: str, theory_options: dict, cosmology: object=None, data_att
         theory = DampedBAOWigglesTracerCorrelationFunctionMultipoles(template=template, **kw)
         for name, config in params.items():
             for param in theory.init.params.select(basename=name):
-                param.update(**config)
+                param.update(**config, fixed=('prior' not in config))
         ells = getattr(data, 'ells', [0, 2, 4])
         for ell in [0, 2, 4]:
             if ell not in ells:
@@ -289,7 +289,7 @@ def get_theory(stat: str, theory_options: dict, cosmology: object=None, data_att
                     param.update(fixed=True)
         if len(ells) <= 1:
             theory.init.params['dbeta'].update(fixed=True)
-        if theory_options['marg']:
+        if False: #theory_options['marg']:
             for param in theory.init.params.select(basename=['al*', 'bl*']):
                 param.update(derived='.auto')
     if theory is None:
@@ -697,6 +697,7 @@ def get_stats(observables_options: list[dict], covariance_options: dict=None, un
                 tracers = tracers[0]
             fn = get_stats_fn(kind=f'covariance_{stat}' + source, **(file_kw | dict(tracer=tracers)))
             if fn.exists():
+                logger.info(f"Reading covariance for {stat} from {_format_log_fns(fn)}")
                 covariances.append(types.read(fn))
         if not covariances:
             raise ValueError('no covariances found')
