@@ -58,14 +58,8 @@ def run_fit(actions=('profile',), template='direct', version='abacus-2ndgen-dr2-
                 for iobservable, observable in enumerate(sublikelihood.observables):
                     plot_covariance = sublikelihood.covariance.at.observable.get(observables=observable.name)
                     plot_covariance = plot_covariance.at.observable.match(observable.data.clone(value=0. * observable.data.value()))
-                    plot_observable = observable.__class__(
-                        data=observable.data,
-                        window=observable.window,
-                        covariance=plot_covariance,
-                        theory=observable.theory,
-                    )
-                    plot_observable()
-                    plot_observable.plot(fn=plot_dir / f'plot_likelihood{ilikelihood}_observable{iobservable}.png')
+                    observable.covariance = plot_covariance
+                    observable.plot(fn=plot_dir / f'plot_likelihood{ilikelihood}_observable{iobservable}.png')
 
 
 if __name__ == '__main__':
