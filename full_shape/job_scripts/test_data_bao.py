@@ -24,8 +24,8 @@ def run_fit(actions=('profile',), tracer='LRG1', data='data-dr2-v1.1', stats_dir
     import os
     from pathlib import Path
     import functools
-    from desilike.mpi import CurrentMPIComm
-    mpicomm = CurrentMPIComm.get()
+    from mpi4py import MPI
+    mpicomm = MPI.COMM_WORLD
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
     os.environ['CUDA_VISIBLE_DEVICES'] = str(mpicomm.rank)
     import jax

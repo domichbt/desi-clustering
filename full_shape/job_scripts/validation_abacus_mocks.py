@@ -28,8 +28,8 @@ def run_fit(actions=('profile',), template='direct', version='abacus-2ndgen-dr2-
     import os
     from pathlib import Path
     import functools
-    from desilike.mpi import CurrentMPIComm
-    mpicomm = CurrentMPIComm.get()
+    from mpi4py import MPI
+    mpicomm = MPI.COMM_WORLD
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
     os.environ['CUDA_VISIBLE_DEVICES'] = str(mpicomm.rank)
     import jax
@@ -57,7 +57,7 @@ def run_fit(actions=('profile',), template='direct', version='abacus-2ndgen-dr2-
             for ilikelihood, sublikelihood in enumerate(likelihood.likelihoods):
                 for iobservable, observable in enumerate(sublikelihood.observables):
                     plot_covariance = sublikelihood.covariance.at.observable.get(observables=observable.name)
-                    plot_covariance = plot_covariance.at.observable.match(observable.data.clone(value=0. * observable.data.value()))
+                    plot_covariance = plot_covariance.at.observable.match(observable.data)
                     observable.covariance = plot_covariance
                     observable.plot(fn=plot_dir / f'plot_likelihood{ilikelihood}_observable{iobservable}.png')
 
