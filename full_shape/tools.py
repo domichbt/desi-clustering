@@ -91,6 +91,42 @@ def get_cosmology(cosmology_options: dict=None):
 
 
 
+def _get_default_ref_from_prior(prior, value=None):
+    """Build a compact reference distribution from a prior for sampler initialization."""
+    if not prior:
+        return None
+
+    dist = prior.get('dist', None)
+    limits = prior.get('limits', [-np.inf, np.inf])
+    if limits is None:
+        limits = [-np.inf, np.inf]
+    limits = list(limits)
+
+    if dist == 'norm':
+        scale = prior.get('scale', None)
+        if scale is None or scale <= 0:
+            return None
+        return {
+            'dist': 'norm',
+            'loc': prior.get('loc', value if value is not None else 0.),
+            'scale': scale / 5.,
+            'limits': limits,
+        }
+
+    if dist == 'uniform':
+        if len(limits) != 2 or not np.all(np.isfinite(limits)):
+            return None
+        lo, hi = limits
+        return {
+            'dist': 'norm',
+            'loc': value if value is not None else 0.5 * (lo + hi),
+            'scale': (hi - lo) / 20.,
+            'limits': [lo, hi],
+        }
+
+    return None
+
+
 def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, tracer=None, sigma8_fid=1.):
     """
     Build a dictionary of parameter priors.
@@ -208,6 +244,12 @@ def _get_default_theory_nuisance_priors(model, stat, prior_basis, b3_coev=True, 
                 params['X_FoG_bp'] = {'fixed': True}
             else:
                 params['X_FoG_bp'] = {'prior': {'dist': 'uniform', 'limits': [0, 15]}}
+    for config in params.values():
+        if config.get('fixed', False):
+            continue
+        ref = _get_default_ref_from_prior(config.get('prior', None), value=config.get('value', None))
+        if ref is not None and 'ref' not in config:
+            config['ref'] = ref
     return params
 
 
