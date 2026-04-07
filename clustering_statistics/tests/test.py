@@ -378,11 +378,11 @@ if __name__ == '__main__':
     #test_complete_catalog()
     #test_expand_randoms_catalog()
     #test_complete_stats()
-    test_expand_randoms_stats()
+    #test_expand_randoms_stats()
 
     #test_window()
     #test_blinding()
-    #test_covariance()
+    test_covariance()
     #test_rotation()
     #test_window3()
     #test_stats_fn()
