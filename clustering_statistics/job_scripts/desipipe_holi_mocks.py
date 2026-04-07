@@ -120,6 +120,10 @@ if __name__ == '__main__':
     # to run job
     mode = 'slurm'
     imocks2run = np.arange(1000)
+    if version == 'holi-v3-altmtl':
+        # do not perform measurements on dubious mocks
+        bad_imocks = np.loadtxt('../helper_scripts/dubious_holi-v3-altmtl.txt',dtype=int)
+        imocks2run = imocks2run[~np.isin(imocks2run,bad_imocks)]
     stats_dir  = tools.base_stats_dir
 
     # run fiducial full_shape
